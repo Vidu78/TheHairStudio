@@ -1,11 +1,13 @@
-import React, { useEffect } from 'react';
-import { NavigationContainer, useNavigation } from '@react-navigation/native';
+import React, { useEffect, useRef } from 'react';
+import { NavigationContainer, useNavigation, createNavigationContainerRef } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Text, View } from 'react-native';
+import { Text, View, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { supabase } from '../config/supabase';
 
 import SplashScreen from '../screens/SplashScreen';
+import ResetPasswordScreen from '../screens/ResetPasswordScreen';
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
 import WelcomeScreen from '../screens/WelcomeScreen';
@@ -21,6 +23,7 @@ import { useApp } from '../context/AppContext';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
+const navigationRef = createNavigationContainerRef();
 
 function TabIcon({ icon, focused }) {
   return (
@@ -155,13 +158,25 @@ function AdminTabs() {
 }
 
 export default function AppNavigator() {
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        if (navigationRef.isReady()) {
+          navigationRef.navigate('ResetPassword');
+        }
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <Stack.Navigator
         initialRouteName="Splash"
         screenOptions={{ headerShown: false }}
       >
         <Stack.Screen name="Splash" component={SplashScreen} />
+        <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
         <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="Register" component={RegisterScreen} />
         <Stack.Screen name="Welcome" component={WelcomeScreen} />

@@ -119,7 +119,7 @@ export default function LoginScreen({ navigation }) {
     }
     try {
       await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-        redirectTo: 'https://the-hair-studio.vercel.app',
+        redirectTo: 'https://dist-zeta-nine-75.vercel.app',
       });
       showAlert('✉️ Email inviata', `Abbiamo inviato un link per reimpostare la password a ${email.trim()}`);
     } catch (_) {
