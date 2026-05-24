@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  Dimensions, Alert, Image, Switch, Platform,
+  Dimensions, Alert, Image, Switch, Platform, TextInput,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../context/AppContext';
 import { BARBER_PHOTOS, SERVICES } from '../data/appData';
+import { requestPushPermission, isPushSupported, getPushPermissionStatus } from '../utils/pushNotifications';
 
 const { width } = Dimensions.get('window');
 
@@ -69,7 +70,21 @@ function AvailabilityChart({ data }) {
 
 export default function AdminDashboard({ navigation }) {
   const { bookings, updateBookingStatus, logout, barbers, setBarberVacation, updateBarberPhoto, pageViews, notifications, markNotificationRead, markAllNotificationsRead } = useApp();
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab]       = useState('overview');
+  const [pushEnabled, setPushEnabled]   = useState(getPushPermissionStatus() === 'granted');
+  const [blockedDates, setBlockedDates] = useState([]); // { date, barber_name, reason }
+  const [newBlockDate, setNewBlockDate] = useState('');
+  const [newBlockReason, setNewBlockReason] = useState('Chiusura');
+
+  const handleTogglePush = async () => {
+    if (pushEnabled) {
+      Alert.alert('Notifiche', 'Per disabilitare le notifiche usa le impostazioni del browser.');
+      return;
+    }
+    const granted = await requestPushPermission();
+    setPushEnabled(granted);
+    if (!granted) Alert.alert('Notifiche bloccate', 'Abilita le notifiche nelle impostazioni del browser.');
+  };
 
   const today = new Date().toISOString().split('T')[0];
   const now = new Date();
@@ -144,6 +159,28 @@ export default function AdminDashboard({ navigation }) {
       }))
       .sort((a, b) => b.pct - a.pct)
       .slice(0, 5);
+  };
+
+  const handleExportCSV = () => {
+    const header = 'ID,Cliente,Servizio,Barbiere,Data,Ora,Prezzo,Stato';
+    const rows = bookings.map(b =>
+      `"${b.id}","${b.clientName}","${b.service}","${b.barber}","${b.date}","${b.time}",${b.price},"${b.status}"`
+    ).join('\n');
+    const csv = header + '\n' + rows;
+
+    if (Platform.OS === 'web') {
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url  = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href     = url;
+      link.download = `prenotazioni_${new Date().toISOString().split('T')[0]}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } else {
+      Alert.alert('Esporta CSV', 'Il download CSV è disponibile solo dalla versione web dell\'app.');
+    }
   };
 
   const handleLogout = () => {
@@ -226,6 +263,11 @@ export default function AdminDashboard({ navigation }) {
               )}
               <Text style={styles.notifIcon}>🔔</Text>
             </TouchableOpacity>
+            {isPushSupported() && (
+              <TouchableOpacity style={styles.logoutBtn} onPress={handleTogglePush}>
+                <Text style={styles.logoutIcon}>{pushEnabled ? '🔔' : '🔕'}</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
               <Text style={styles.logoutIcon}>🚪</Text>
             </TouchableOpacity>
@@ -406,6 +448,63 @@ export default function AdminDashboard({ navigation }) {
         {activeTab === 'barbers' && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Gestione Barbieri</Text>
+
+            {/* Chiusure/Ferie programmate */}
+            <View style={styles.blockSection}>
+              <Text style={styles.sectionTitle}>🚫 Chiusure & Ferie Programmate</Text>
+
+              {/* Lista blocchi attivi */}
+              {blockedDates.length === 0 ? (
+                <Text style={styles.emptyBlockText}>Nessuna chiusura programmata</Text>
+              ) : (
+                blockedDates.map((block, i) => (
+                  <View key={i} style={styles.blockCard}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.blockDate}>{block.date}</Text>
+                      <Text style={styles.blockReason}>{block.reason}{block.barber_name ? ` — ${block.barber_name}` : ' — Tutti'}</Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setBlockedDates(prev => prev.filter((_, idx) => idx !== i))}
+                      style={styles.blockRemoveBtn}
+                    >
+                      <Text style={{ color: '#e74c3c', fontWeight: '700' }}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+
+              {/* Form aggiungi chiusura */}
+              <View style={styles.blockForm}>
+                <TextInput
+                  style={styles.blockInput}
+                  placeholder="Data (YYYY-MM-DD)"
+                  placeholderTextColor="rgba(255,255,255,0.25)"
+                  value={newBlockDate}
+                  onChangeText={setNewBlockDate}
+                />
+                <TextInput
+                  style={styles.blockInput}
+                  placeholder="Motivo (es. Ferie agosto)"
+                  placeholderTextColor="rgba(255,255,255,0.25)"
+                  value={newBlockReason}
+                  onChangeText={setNewBlockReason}
+                />
+                <TouchableOpacity
+                  style={styles.blockAddBtn}
+                  onPress={() => {
+                    if (!newBlockDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                      Alert.alert('Formato errato', 'Usa il formato YYYY-MM-DD (es. 2026-08-15)');
+                      return;
+                    }
+                    setBlockedDates(prev => [...prev, { date: newBlockDate, reason: newBlockReason || 'Chiusura', barber_name: null }]);
+                    setNewBlockDate('');
+                    setNewBlockReason('Chiusura');
+                  }}
+                >
+                  <Text style={styles.blockAddBtnText}>+ Aggiungi Chiusura</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
             {barbers.map(barber => {
               const photoSource = barber.photoOverride
                 ? { uri: barber.photoOverride }
@@ -532,6 +631,17 @@ export default function AdminDashboard({ navigation }) {
                   </View>
                 ))
               )}
+            </View>
+
+            {/* Esporta CSV */}
+            <View style={styles.section}>
+              <TouchableOpacity
+                style={styles.exportBtn}
+                onPress={handleExportCSV}
+                activeOpacity={0.75}
+              >
+                <Text style={styles.exportBtnText}>📥 Esporta Prenotazioni CSV</Text>
+              </TouchableOpacity>
             </View>
 
             {/* KPI reali */}
@@ -835,6 +945,13 @@ const styles = StyleSheet.create({
   serviceStatPct: { fontWeight: '800', fontSize: 14 },
   serviceStatRev: { color: 'rgba(255,255,255,0.4)', fontSize: 11 },
 
+  exportBtn: {
+    backgroundColor: 'rgba(201,168,76,0.1)',
+    borderRadius: 14, padding: 16, alignItems: 'center',
+    borderWidth: 1, borderColor: 'rgba(201,168,76,0.4)',
+  },
+  exportBtnText: { color: '#C9A84C', fontWeight: '800', fontSize: 15 },
+
   kpiGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   kpiCard: {
     width: (width - 64) / 3, backgroundColor: 'rgba(255,255,255,0.04)',
@@ -875,4 +992,35 @@ const styles = StyleSheet.create({
   readBtnText: { color: '#2ecc71', fontWeight: '700', fontSize: 11 },
   readDone: { paddingHorizontal: 8, paddingVertical: 4 },
   readDoneText: { color: 'rgba(46,204,113,0.5)', fontSize: 11 },
+
+  // Calendar blocks
+  blockSection: {
+    marginTop: 28, borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)', paddingTop: 20,
+  },
+  emptyBlockText: { color: 'rgba(255,255,255,0.3)', fontSize: 13, marginBottom: 14 },
+  blockCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(231,76,60,0.08)', borderRadius: 10,
+    padding: 12, marginBottom: 8,
+    borderWidth: 1, borderColor: 'rgba(231,76,60,0.2)',
+  },
+  blockDate: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
+  blockReason: { color: 'rgba(255,255,255,0.45)', fontSize: 12, marginTop: 2 },
+  blockRemoveBtn: {
+    padding: 8, backgroundColor: 'rgba(231,76,60,0.15)',
+    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(231,76,60,0.3)',
+  },
+  blockForm: { marginTop: 12, gap: 10 },
+  blockInput: {
+    backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 10,
+    padding: 12, color: '#FFFFFF', fontSize: 14,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+  },
+  blockAddBtn: {
+    backgroundColor: 'rgba(231,76,60,0.12)', borderRadius: 12,
+    padding: 14, alignItems: 'center',
+    borderWidth: 1, borderColor: 'rgba(231,76,60,0.4)',
+  },
+  blockAddBtnText: { color: '#e74c3c', fontWeight: '800', fontSize: 14 },
 });

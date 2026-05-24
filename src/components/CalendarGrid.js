@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, Dimensions, StyleSheet as RN,
 } from 'react-native';
@@ -13,8 +13,27 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const COL_WIDTH    = (SCREEN_WIDTH - TIME_COL_WIDTH) / 3;
 
 export default function CalendarGrid({ selectedDate, bookings, barbers }) {
-  const scrollRef      = useRef(null);
+  const scrollRef       = useRef(null);
   const selectedDateStr = formatDateStr(selectedDate);
+  const [now, setNow]   = useState(new Date());
+  const todayStr        = formatDateStr(new Date());
+  const isToday         = selectedDateStr === todayStr;
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  function getCurrentTimeY() {
+    const h = now.getHours();
+    const m = now.getMinutes();
+    const totalMins = h * 60 + m;
+    if (totalMins < 510 || totalMins > 1230) return null; // fuori orario (08:30–20:30)
+    if (totalMins < 780) return ((totalMins - 510) / 30) * ROW_HEIGHT; // mattina
+    if (totalMins < 900) return MORNING_END_IDX * ROW_HEIGHT;           // pausa pranzo
+    return MORNING_END_IDX * ROW_HEIGHT + LUNCH_GAP + ((totalMins - 900) / 30) * ROW_HEIGHT;
+  }
+  const currentTimeY = getCurrentTimeY();
 
   // Scorre automaticamente a 08:30 (y=0) ma mostra già dall'inizio
   const handleLayout = () => {
@@ -146,6 +165,26 @@ export default function CalendarGrid({ selectedDate, bookings, barbers }) {
               </View>
             );
           })}
+
+          {/* Linea ora corrente */}
+          {isToday && currentTimeY !== null && (
+            <View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                left: TIME_COL_WIDTH - 4,
+                right: 0,
+                top: currentTimeY,
+                height: 2,
+                backgroundColor: '#e74c3c',
+                zIndex: 20,
+                flexDirection: 'row',
+                alignItems: 'center',
+              }}
+            >
+              <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#e74c3c', marginLeft: -5 }} />
+            </View>
+          )}
 
         </View>
 

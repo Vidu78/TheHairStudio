@@ -7,9 +7,25 @@ import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 import { SALON_INFO } from '../data/appData';
 
+function StarRating({ bookingId, rating, onRate }) {
+  return (
+    <View style={{ flexDirection: 'row', gap: 3, marginTop: 8 }}>
+      <Text style={{ color: 'rgba(255,255,255,0.3)', fontSize: 10, marginRight: 2, alignSelf: 'center' }}>
+        Il tuo voto:
+      </Text>
+      {[1, 2, 3, 4, 5].map(star => (
+        <TouchableOpacity key={star} onPress={() => onRate(bookingId, star)} activeOpacity={0.7}>
+          <Text style={{ fontSize: 18 }}>{star <= rating ? '⭐' : '☆'}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+}
+
 export default function ProfileScreen({ navigation }) {
   const { currentUser, logout, bookings, periodicBookings, cancelBooking } = useApp();
   const [showInfo, setShowInfo] = useState(false);
+  const [ratings, setRatings]   = useState({});
 
   const handleCancelBooking = (bookingId) => {
     if (Platform.OS === 'web') {
@@ -109,6 +125,13 @@ export default function ProfileScreen({ navigation }) {
                   <Text style={styles.bookingService}>{b.service}</Text>
                   <Text style={styles.bookingDate}>{b.date} • {b.time}</Text>
                   <Text style={styles.bookingBarber}>{b.barber}</Text>
+                  {b.status === 'confirmed' && (
+                    <StarRating
+                      bookingId={b.id}
+                      rating={ratings[b.id] || 0}
+                      onRate={(id, star) => setRatings(prev => ({ ...prev, [id]: star }))}
+                    />
+                  )}
                 </View>
                 <View style={styles.bookingRight}>
                   <Text style={styles.bookingPrice}>€{b.price}</Text>
