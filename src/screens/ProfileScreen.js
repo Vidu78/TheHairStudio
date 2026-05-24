@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Linking, Platform, Modal,
+  View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Linking, Platform, Modal, TextInput,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useApp } from '../context/AppContext';
@@ -24,8 +24,31 @@ function StarRating({ bookingId, rating, onRate }) {
 
 export default function ProfileScreen({ navigation }) {
   const { currentUser, logout, bookings, periodicBookings, cancelBooking } = useApp();
-  const [showInfo, setShowInfo] = useState(false);
-  const [ratings, setRatings]   = useState({});
+  const [showInfo, setShowInfo]         = useState(false);
+  const [ratings, setRatings]           = useState({});
+  const [phoneInput, setPhoneInput]     = useState('');
+  const [isEditingPhone, setIsEditing]  = useState(false);
+  const [phoneSaving, setPhoneSaving]   = useState(false);
+
+  useEffect(() => {
+    setPhoneInput(currentUser?.phone || '');
+  }, [currentUser]);
+
+  const handleSavePhone = async () => {
+    if (!currentUser?.id) return;
+    setPhoneSaving(true);
+    try {
+      await Promise.race([
+        supabase.from('profiles').update({ phone: phoneInput.trim() }).eq('id', currentUser.id),
+        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
+      ]);
+      setIsEditing(false);
+    } catch (_) {
+      Alert.alert('Errore', 'Impossibile salvare il numero. Riprova.');
+    } finally {
+      setPhoneSaving(false);
+    }
+  };
 
   // Carica ratings esistenti dalle prenotazioni confermate
   useEffect(() => {
@@ -231,6 +254,48 @@ export default function ProfileScreen({ navigation }) {
           </View>
         </View>
 
+        {/* Numero di telefono per SMS reminder */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>📱 Promemoria SMS</Text>
+          <View style={styles.phoneCard}>
+            <Text style={styles.phoneLabel}>Il tuo numero per i promemoria appuntamento:</Text>
+            {isEditingPhone ? (
+              <View style={styles.phoneEditRow}>
+                <TextInput
+                  style={styles.phoneInput}
+                  value={phoneInput}
+                  onChangeText={setPhoneInput}
+                  placeholder="+39 333 123 4567"
+                  placeholderTextColor="rgba(255,255,255,0.25)"
+                  keyboardType="phone-pad"
+                  autoFocus
+                />
+                <TouchableOpacity
+                  style={styles.phoneSaveBtn}
+                  onPress={handleSavePhone}
+                  disabled={phoneSaving}
+                >
+                  <Text style={styles.phoneSaveBtnText}>{phoneSaving ? '...' : 'Salva'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.phoneCancelBtn}
+                  onPress={() => { setIsEditing(false); setPhoneInput(currentUser?.phone || ''); }}
+                >
+                  <Text style={styles.phoneCancelBtnText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.phoneDisplayRow} onPress={() => setIsEditing(true)}>
+                <Text style={styles.phoneValue}>
+                  {phoneInput || 'Nessun numero impostato'}
+                </Text>
+                <Text style={styles.phoneEditHint}>✏️ Modifica</Text>
+              </TouchableOpacity>
+            )}
+            <Text style={styles.phoneNote}>Riceverai un SMS di promemoria il giorno prima dell'appuntamento.</Text>
+          </View>
+        </View>
+
         {/* Info App */}
         <TouchableOpacity style={styles.infoAppBtn} onPress={() => setShowInfo(true)}>
           <Text style={{ fontSize: 20 }}>ℹ️</Text>
@@ -407,6 +472,34 @@ const styles = StyleSheet.create({
   infoIcon: { fontSize: 20 },
   infoText: { color: 'rgba(255,255,255,0.7)', fontSize: 14, flex: 1 },
   infoArrow: { color: '#C9A84C', fontSize: 20 },
+
+  phoneCard: {
+    backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 14,
+    padding: 16, borderWidth: 1, borderColor: 'rgba(201,168,76,0.15)',
+  },
+  phoneLabel: { color: 'rgba(255,255,255,0.5)', fontSize: 12, marginBottom: 10 },
+  phoneDisplayRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  phoneValue: { color: '#FFFFFF', fontSize: 15, fontWeight: '600' },
+  phoneEditHint: { color: '#C9A84C', fontSize: 12 },
+  phoneEditRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  phoneInput: {
+    flex: 1, color: '#FFFFFF', fontSize: 15,
+    backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 8,
+    borderWidth: 1, borderColor: 'rgba(201,168,76,0.3)',
+  },
+  phoneSaveBtn: {
+    backgroundColor: '#C9A84C', borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 8,
+  },
+  phoneSaveBtnText: { color: '#0A0A0A', fontWeight: '800', fontSize: 13 },
+  phoneCancelBtn: {
+    backgroundColor: 'rgba(231,76,60,0.15)', borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 8,
+    borderWidth: 1, borderColor: 'rgba(231,76,60,0.3)',
+  },
+  phoneCancelBtnText: { color: '#e74c3c', fontWeight: '700' },
+  phoneNote: { color: 'rgba(255,255,255,0.3)', fontSize: 11, marginTop: 10, lineHeight: 16 },
 
   infoAppBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
