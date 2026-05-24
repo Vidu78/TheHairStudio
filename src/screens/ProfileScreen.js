@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Linking, Platform, Modal,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 import { SALON_INFO } from '../data/appData';
+import { supabase } from '../config/supabase';
 
 function StarRating({ bookingId, rating, onRate }) {
   return (
@@ -26,6 +26,26 @@ export default function ProfileScreen({ navigation }) {
   const { currentUser, logout, bookings, periodicBookings, cancelBooking } = useApp();
   const [showInfo, setShowInfo] = useState(false);
   const [ratings, setRatings]   = useState({});
+
+  // Carica ratings esistenti dalle prenotazioni confermate
+  useEffect(() => {
+    const confirmed = bookings.filter(b => b.status === 'confirmed' && b.rating);
+    if (confirmed.length > 0) {
+      const map = {};
+      confirmed.forEach(b => { map[b.id] = b.rating; });
+      setRatings(map);
+    }
+  }, [bookings]);
+
+  const handleRate = async (bookingId, star) => {
+    setRatings(prev => ({ ...prev, [bookingId]: star }));
+    try {
+      await Promise.race([
+        supabase.from('bookings').update({ rating: star }).eq('id', bookingId),
+        new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 5000)),
+      ]);
+    } catch (_) {}
+  };
 
   const handleCancelBooking = (bookingId) => {
     if (Platform.OS === 'web') {
@@ -129,7 +149,7 @@ export default function ProfileScreen({ navigation }) {
                     <StarRating
                       bookingId={b.id}
                       rating={ratings[b.id] || 0}
-                      onRate={(id, star) => setRatings(prev => ({ ...prev, [id]: star }))}
+                      onRate={handleRate}
                     />
                   )}
                 </View>

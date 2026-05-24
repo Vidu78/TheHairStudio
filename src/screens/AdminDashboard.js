@@ -8,6 +8,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../context/AppContext';
 import { BARBER_PHOTOS, SERVICES } from '../data/appData';
 import { requestPushPermission, isPushSupported, getPushPermissionStatus } from '../utils/pushNotifications';
+import { supabase } from '../config/supabase';
 
 const { width } = Dimensions.get('window');
 
@@ -72,9 +73,23 @@ export default function AdminDashboard({ navigation }) {
   const { bookings, updateBookingStatus, logout, barbers, setBarberVacation, updateBarberPhoto, pageViews, notifications, markNotificationRead, markAllNotificationsRead } = useApp();
   const [activeTab, setActiveTab]       = useState('overview');
   const [pushEnabled, setPushEnabled]   = useState(getPushPermissionStatus() === 'granted');
-  const [blockedDates, setBlockedDates] = useState([]); // { date, barber_name, reason }
+  const [blockedDates, setBlockedDates] = useState([]);
   const [newBlockDate, setNewBlockDate] = useState('');
   const [newBlockReason, setNewBlockReason] = useState('Chiusura');
+
+  // Carica chiusure da Supabase
+  useEffect(() => {
+    const loadBlocks = async () => {
+      try {
+        const { data } = await Promise.race([
+          supabase.from('calendar_blocks').select('*').order('date'),
+          new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
+        ]);
+        if (data) setBlockedDates(data);
+      } catch (_) {}
+    };
+    loadBlocks();
+  }, []);
 
   const handleTogglePush = async () => {
     if (pushEnabled) {
@@ -464,7 +479,17 @@ export default function AdminDashboard({ navigation }) {
                       <Text style={styles.blockReason}>{block.reason}{block.barber_name ? ` — ${block.barber_name}` : ' — Tutti'}</Text>
                     </View>
                     <TouchableOpacity
-                      onPress={() => setBlockedDates(prev => prev.filter((_, idx) => idx !== i))}
+                      onPress={async () => {
+                        setBlockedDates(prev => prev.filter((_, idx) => idx !== i));
+                        if (block.id) {
+                          try {
+                            await Promise.race([
+                              supabase.from('calendar_blocks').delete().eq('id', block.id),
+                              new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
+                            ]);
+                          } catch (_) {}
+                        }
+                      }}
                       style={styles.blockRemoveBtn}
                     >
                       <Text style={{ color: '#e74c3c', fontWeight: '700' }}>✕</Text>
@@ -491,14 +516,21 @@ export default function AdminDashboard({ navigation }) {
                 />
                 <TouchableOpacity
                   style={styles.blockAddBtn}
-                  onPress={() => {
+                  onPress={async () => {
                     if (!newBlockDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
                       Alert.alert('Formato errato', 'Usa il formato YYYY-MM-DD (es. 2026-08-15)');
                       return;
                     }
-                    setBlockedDates(prev => [...prev, { date: newBlockDate, reason: newBlockReason || 'Chiusura', barber_name: null }]);
+                    const newBlock = { date: newBlockDate, reason: newBlockReason || 'Chiusura', barber_name: null };
+                    setBlockedDates(prev => [...prev, newBlock]);
                     setNewBlockDate('');
                     setNewBlockReason('Chiusura');
+                    try {
+                      await Promise.race([
+                        supabase.from('calendar_blocks').insert(newBlock),
+                        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
+                      ]);
+                    } catch (_) {}
                   }}
                 >
                   <Text style={styles.blockAddBtnText}>+ Aggiungi Chiusura</Text>
