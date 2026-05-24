@@ -1,0 +1,36 @@
+{
+  "name": "thehairstudio",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "deploy": "npx expo export -p web --output-dir dist && node -e \"require('fs').writeFileSync('dist/vercel.json',JSON.stringify({headers:[{source:'/index.html',headers:[{key:'Cache-Control',value:'no-cache,no-store,must-revalidate'}]},{source:'/_expo/(.*)',headers:[{key:'Cache-Control',value:'public,max-age=31536000,immutable'}]}]}))\" && vercel --prod dist --project the-hair-studio --yes"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~6.1.2",
+    "@expo/vector-icons": "^15.1.1",
+    "@react-navigation/bottom-tabs": "^7.16.1",
+    "@react-navigation/native": "^7.2.4",
+    "@react-navigation/stack": "^7.9.2",
+    "@supabase/ssr": "^0.10.3",
+    "@supabase/supabase-js": "^2.106.1",
+    "babel-preset-expo": "~54.0.10",
+    "expo": "~54.0.33",
+    "expo-image-picker": "~17.0.11",
+    "expo-linear-gradient": "~15.0.8",
+    "expo-local-authentication": "~17.0.8",
+    "expo-secure-store": "~15.0.8",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-gesture-handler": "~2.28.0",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-web": "^0.21.0"
+  },
+  "private": true
+}

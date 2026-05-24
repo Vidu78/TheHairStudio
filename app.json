@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "The Hair Studio",
+    "slug": "the-hair-studio-noci",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icona app.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0A0A"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "it.thehairstudio.noci"
+    },
+    "android": {
+      "package": "it.thehairstudio.noci",
+      "versionCode": 2,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icona app.png",
+        "backgroundColor": "#0A0A0A"
+      },
+      "permissions": []
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png",
+      "name": "The Hair Studio",
+      "shortName": "Hair Studio",
+      "description": "Prenota il tuo appuntamento al The Hair Studio – Noci (BA)",
+      "lang": "it",
+      "themeColor": "#C9A84C",
+      "backgroundColor": "#0A0A0A",
+      "display": "standalone",
+      "orientation": "portrait",
+      "scope": "/",
+      "startUrl": "/"
+    },
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b46ae4db-b6ef-465d-b24d-da1f838f4b00"
+      }
+    },
+    "owner": "simon55",
+    "plugins": [
+      "expo-secure-store"
+    ]
+  }
+}
