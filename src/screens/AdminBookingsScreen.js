@@ -31,10 +31,26 @@ export default function AdminBookingsScreen({ navigation }) {
     : bookings.filter(b => b.status === filter);
 
   const handleConfirmAction = async (booking) => {
-    updateBookingStatus(booking.id, 'confirmed');
-    fetchBookings?.();
+    // 1. URL calendario (sincrono)
+    const calUrl = buildGoogleCalendarUrl({
+      date:    booking.date,
+      time:    booking.time,
+      service: booking.service,
+      barber:  booking.barber,
+      slots:   booking.slots || 1,
+    });
 
-    // Recupera email cliente da profilo
+    // 2. Conferma + apre calendario PRIMA di qualsiasi await
+    if (Platform.OS === 'web') {
+      if (!window.confirm(`Confermare la prenotazione di ${booking.clientName}?`)) return;
+      window.open(calUrl, '_blank', 'noopener,noreferrer');
+    }
+
+    // 3. Aggiorna DB e ricarica state
+    await updateBookingStatus(booking.id, 'confirmed');
+    if (fetchBookings) await fetchBookings();
+
+    // 4. Recupera email e invia conferma
     let clientEmail = '';
     if (booking.clientId) {
       try {
@@ -46,8 +62,6 @@ export default function AdminBookingsScreen({ navigation }) {
         if (data?.email) clientEmail = data.email;
       } catch (_) {}
     }
-
-    // Invia email di conferma con link Google Calendar
     if (clientEmail) {
       sendConfirmationEmail({
         to_email:    clientEmail,
@@ -61,22 +75,7 @@ export default function AdminBookingsScreen({ navigation }) {
       });
     }
 
-    const calUrl = buildGoogleCalendarUrl({
-      date:    booking.date,
-      time:    booking.time,
-      service: booking.service,
-      barber:  booking.barber,
-      slots:   booking.slots || 1,
-    });
-
-    if (Platform.OS === 'web') {
-      const msg = clientEmail
-        ? `Prenotazione di ${booking.clientName} confermata.\nEmail di conferma inviata a ${clientEmail}.`
-        : `Prenotazione di ${booking.clientName} confermata.`;
-      if (window.confirm(`✅ ${msg}\n\nAprire Google Calendar per questa prenotazione?`)) {
-        window.open(calUrl, '_blank');
-      }
-    } else {
+    if (Platform.OS !== 'web') {
       Alert.alert(
         '✅ Confermata',
         clientEmail
@@ -87,6 +86,8 @@ export default function AdminBookingsScreen({ navigation }) {
           { text: '📅 Google Calendar', onPress: () => Linking.openURL(calUrl) },
         ]
       );
+    } else if (clientEmail) {
+      window.alert(`✅ Email di conferma inviata a ${clientEmail}.`);
     }
   };
 

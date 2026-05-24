@@ -24,12 +24,14 @@ function StarRating({ bookingId, rating, onRate }) {
 }
 
 export default function ProfileScreen({ navigation }) {
-  const { currentUser, logout, bookings, periodicBookings, cancelBooking } = useApp();
+  const { currentUser, logout, bookings, periodicBookings, cancelBooking, fetchBookings } = useApp();
   const [showInfo, setShowInfo]         = useState(false);
   const [ratings, setRatings]           = useState({});
   const [phoneInput, setPhoneInput]     = useState('');
   const [isEditingPhone, setIsEditing]  = useState(false);
   const [phoneSaving, setPhoneSaving]   = useState(false);
+
+  useEffect(() => { fetchBookings(); }, []);
 
   useEffect(() => {
     setPhoneInput(currentUser?.phone || '');

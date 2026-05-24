@@ -78,8 +78,9 @@ export default function AdminDashboard({ navigation }) {
   const [newBlockDate, setNewBlockDate] = useState('');
   const [newBlockReason, setNewBlockReason] = useState('Chiusura');
 
-  // Carica chiusure da Supabase
+  // Carica chiusure da Supabase + polling prenotazioni ogni 30s
   useEffect(() => {
+    fetchBookings?.();
     const loadBlocks = async () => {
       try {
         const { data } = await Promise.race([
@@ -90,11 +91,29 @@ export default function AdminDashboard({ navigation }) {
       } catch (_) {}
     };
     loadBlocks();
+    const poll = setInterval(() => fetchBookings?.(), 30000);
+    return () => clearInterval(poll);
   }, []);
 
   const handleConfirmFull = async (booking) => {
-    updateBookingStatus(booking.id, 'confirmed');
-    if (fetchBookings) fetchBookings();
+    // 1. Costruisce URL calendario (sincrono)
+    const calUrl = buildGoogleCalendarUrl({
+      date: booking.date, time: booking.time,
+      service: booking.service, barber: booking.barber, slots: booking.slots || 1,
+    });
+
+    // 2. Chiede conferma + apre calendario PRIMA di qualsiasi async
+    //    (window.open dopo window.confirm è azione utente diretta → non bloccato)
+    if (Platform.OS === 'web') {
+      if (!window.confirm(`Confermare la prenotazione di ${booking.clientName}?`)) return;
+      window.open(calUrl, '_blank', 'noopener,noreferrer');
+    }
+
+    // 3. Async: aggiorna DB e ricarica state
+    await updateBookingStatus(booking.id, 'confirmed');
+    if (fetchBookings) await fetchBookings();
+
+    // 4. Async: recupera email cliente e invia conferma
     let clientEmail = '';
     if (booking.clientId) {
       try {
@@ -110,17 +129,9 @@ export default function AdminDashboard({ navigation }) {
         price: booking.price, slots: booking.slots || 1,
       });
     }
-    const calUrl = buildGoogleCalendarUrl({
-      date: booking.date, time: booking.time,
-      service: booking.service, barber: booking.barber, slots: booking.slots || 1,
-    });
-    if (Platform.OS === 'web') {
-      if (window.confirm(
-        `✅ Prenotazione di ${booking.clientName} confermata.${clientEmail ? `\nEmail inviata a ${clientEmail}.` : ''}\n\nAprire Google Calendar?`
-      )) {
-        window.open(calUrl, '_blank');
-      }
-    } else {
+
+    // 5. Alert finale (su mobile mostra anche bottone calendario)
+    if (Platform.OS !== 'web') {
       Alert.alert(
         '✅ Confermata',
         clientEmail
@@ -131,6 +142,8 @@ export default function AdminDashboard({ navigation }) {
           { text: '📅 Google Calendar', onPress: () => Linking.openURL(calUrl) },
         ]
       );
+    } else if (clientEmail) {
+      window.alert(`✅ Email di conferma inviata a ${clientEmail}.`);
     }
   };
 
