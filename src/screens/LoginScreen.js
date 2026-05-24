@@ -5,7 +5,6 @@ import {
   Dimensions, StatusBar,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { useApp } from '../context/AppContext';
 import { supabase } from '../config/supabase';
@@ -20,7 +19,6 @@ export default function LoginScreen({ navigation }) {
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
-  const [rememberEmail, setRememberEmail] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
 
   const tabAnim = useRef(new Animated.Value(0)).current;
@@ -73,13 +71,12 @@ export default function LoginScreen({ navigation }) {
               ? localStorage.setItem('ths_remembered_email', email.trim())
               : localStorage.removeItem('ths_remembered_email');
           }
-          // Biometria: se disponibile e non ancora attivata, propone attivazione
           if (biometricAvailable && Platform.OS !== 'web') {
             const alreadyEnabled = global.__biometricEnabled;
             if (!alreadyEnabled) {
               Alert.alert(
                 'Accesso biometrico',
-                'Vuoi attivare l\'accesso con impronta digitale per i prossimi accessi?',
+                "Vuoi attivare l'accesso con impronta digitale per i prossimi accessi?",
                 [
                   { text: 'Non ora', style: 'cancel', onPress: () => navigation.replace('MainTabs') },
                   {
@@ -96,7 +93,7 @@ export default function LoginScreen({ navigation }) {
           }
           navigation.replace('MainTabs');
         } else if (ok === 'unconfirmed') {
-          showAlert('📧 Email non confermata', 'Clicca il link che ti abbiamo inviato per attivare l\'account, poi riprova ad accedere.');
+          showAlert('📧 Email non confermata', "Clicca il link che ti abbiamo inviato per attivare l'account, poi riprova ad accedere.");
         } else {
           showAlert('Errore accesso', 'Email o password non corretti.\nSe non ricordi la password, usa "Recupera password".');
         }
@@ -123,7 +120,7 @@ export default function LoginScreen({ navigation }) {
       });
       showAlert('✉️ Email inviata', `Abbiamo inviato un link per reimpostare la password a ${email.trim()}`);
     } catch (_) {
-      showAlert('Errore', 'Impossibile inviare l\'email. Riprova.');
+      showAlert('Errore', "Impossibile inviare l'email. Riprova.");
     }
   };
 
@@ -184,13 +181,13 @@ export default function LoginScreen({ navigation }) {
             <Animated.View style={[styles.tabIndicator, { left: tabIndicatorLeft }]} />
             <TouchableOpacity style={styles.tab} onPress={() => switchMode('user')}>
               <View style={styles.tabInner}>
-                <Ionicons name="person-outline" size={15} color={mode === 'user' ? '#000' : 'rgba(255,255,255,0.5)'} />
+                <Text style={{ fontSize: 15, color: mode === 'user' ? '#000' : 'rgba(255,255,255,0.5)' }}>👤</Text>
                 <Text style={[styles.tabText, mode === 'user' && styles.tabTextActive]}> Cliente</Text>
               </View>
             </TouchableOpacity>
             <TouchableOpacity style={styles.tab} onPress={() => switchMode('admin')}>
               <View style={styles.tabInner}>
-                <Ionicons name="lock-closed-outline" size={15} color={mode === 'admin' ? '#000' : 'rgba(255,255,255,0.5)'} />
+                <Text style={{ fontSize: 15, color: mode === 'admin' ? '#000' : 'rgba(255,255,255,0.5)' }}>🔒</Text>
                 <Text style={[styles.tabText, mode === 'admin' && styles.tabTextActive]}> Admin</Text>
               </View>
             </TouchableOpacity>
@@ -207,7 +204,7 @@ export default function LoginScreen({ navigation }) {
             <View style={styles.inputGroup}>
               <Text style={styles.label}>EMAIL</Text>
               <View style={styles.inputWrapper}>
-                <Ionicons name="mail-outline" size={18} color="#C9A84C" style={styles.inputIcon} />
+                <Text style={styles.inputIcon}>📧</Text>
                 <TextInput
                   style={styles.input}
                   placeholder="La tua email"
@@ -226,7 +223,7 @@ export default function LoginScreen({ navigation }) {
             <View style={styles.inputGroup}>
               <Text style={styles.label}>PASSWORD</Text>
               <View style={styles.inputWrapper}>
-                <Ionicons name="lock-closed-outline" size={18} color="#C9A84C" style={styles.inputIcon} />
+                <Text style={styles.inputIcon}>🔒</Text>
                 <TextInput
                   style={[styles.input, { flex: 1 }]}
                   placeholder="••••••••"
@@ -239,7 +236,7 @@ export default function LoginScreen({ navigation }) {
                   textContentType="password"
                 />
                 <TouchableOpacity onPress={() => setShowPass(!showPass)}>
-                  <Ionicons name={showPass ? 'eye-off-outline' : 'eye-outline'} size={20} color="rgba(255,255,255,0.5)" />
+                  <Text style={styles.showPassIcon}>{showPass ? '🙈' : '👁️'}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -247,7 +244,7 @@ export default function LoginScreen({ navigation }) {
             {mode === 'user' && (
               <TouchableOpacity style={styles.rememberRow} onPress={() => setRememberMe(!rememberMe)}>
                 <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
-                  {rememberMe && <Ionicons name="checkmark" size={12} color="#000" />}
+                  {rememberMe && <Text style={styles.checkmark}>✓</Text>}
                 </View>
                 <Text style={styles.rememberText}>Ricorda email</Text>
               </TouchableOpacity>
@@ -265,10 +262,9 @@ export default function LoginScreen({ navigation }) {
                 end={{ x: 1, y: 0 }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  {loading
-                    ? <Ionicons name="hourglass-outline" size={18} color="#000" />
-                    : <Ionicons name={mode === 'admin' ? 'shield-checkmark-outline' : 'log-in-outline'} size={18} color="#000" />
-                  }
+                  <Text style={styles.loginBtnIcon}>
+                    {loading ? '⏳' : mode === 'admin' ? '🛡️' : '→'}
+                  </Text>
                   <Text style={styles.loginButtonText}>
                     {loading ? 'Accesso...' : mode === 'admin' ? 'Accedi come Admin' : 'Entra'}
                   </Text>
@@ -279,7 +275,7 @@ export default function LoginScreen({ navigation }) {
             {biometricAvailable && mode === 'user' && (
               <TouchableOpacity style={styles.biometricBtn} onPress={handleBiometric}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Ionicons name="finger-print-outline" size={20} color="#C9A84C" />
+                  <Text style={{ fontSize: 20 }}>🖐️</Text>
                   <Text style={styles.biometricText}>Accedi con impronta digitale</Text>
                 </View>
               </TouchableOpacity>
@@ -288,7 +284,7 @@ export default function LoginScreen({ navigation }) {
             {mode === 'user' && (
               <TouchableOpacity style={styles.forgotBtn} onPress={handleForgotPassword}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="key-outline" size={14} color="rgba(201,168,76,0.7)" />
+                  <Text style={{ fontSize: 14 }}>🔑</Text>
                   <Text style={styles.forgotText}>Recupera password</Text>
                 </View>
               </TouchableOpacity>
@@ -309,11 +305,11 @@ export default function LoginScreen({ navigation }) {
 
           <View style={styles.footer}>
             <View style={styles.footerRow}>
-              <Ionicons name="location-outline" size={11} color="rgba(255,255,255,0.35)" />
+              <Text style={styles.footerIcon}>📍</Text>
               <Text style={styles.footerText}> Via Alessandro Manzoni, 38 • Noci (BA)</Text>
             </View>
             <View style={styles.footerRow}>
-              <Ionicons name="call-outline" size={11} color="rgba(255,255,255,0.35)" />
+              <Text style={styles.footerIcon}>📞</Text>
               <Text style={styles.footerText}> +39 328 594 4459</Text>
             </View>
           </View>
@@ -366,9 +362,10 @@ const styles = StyleSheet.create({
     borderRadius: 12, borderWidth: 1, borderColor: 'rgba(201,168,76,0.2)',
     paddingHorizontal: 14, height: 52,
   },
-  inputIcon: { marginRight: 10 },
+  inputIcon: { fontSize: 18, marginRight: 10 },
   input: { flex: 1, color: '#FFFFFF', fontSize: 16 },
-  showPass: { fontSize: 20, paddingLeft: 8 },
+  showPassIcon: { fontSize: 20, paddingLeft: 8 },
+  loginBtnIcon: { fontSize: 18, color: '#000000' },
   loginButton: { marginTop: 8, borderRadius: 14, overflow: 'hidden' },
   loginButtonDisabled: { opacity: 0.6 },
   loginGradient: { paddingVertical: 16, alignItems: 'center' },
@@ -381,6 +378,7 @@ const styles = StyleSheet.create({
   biometricText: { color: '#C9A84C', fontWeight: '700', fontSize: 14 },
   footer: { alignItems: 'center', marginTop: 32, gap: 6 },
   footerRow: { flexDirection: 'row', alignItems: 'center' },
+  footerIcon: { fontSize: 11, color: 'rgba(255,255,255,0.35)' },
   footerText: { color: 'rgba(255,255,255,0.35)', fontSize: 11 },
   registerLink: { alignItems: 'center', marginTop: 20 },
   registerLinkText: { color: 'rgba(255,255,255,0.5)', fontSize: 14 },
@@ -394,5 +392,6 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   checkboxChecked: { backgroundColor: '#C9A84C' },
+  checkmark: { color: '#000', fontSize: 13, fontWeight: '900' },
   rememberText: { color: 'rgba(255,255,255,0.6)', fontSize: 13 },
 });
