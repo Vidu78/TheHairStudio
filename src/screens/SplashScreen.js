@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, Animated, Dimensions, StatusBar, Image,
+  View, Text, StyleSheet, Animated, Dimensions, StatusBar, Image, Platform,
 } from 'react-native';
 
 import { LinearGradient } from 'expo-linear-gradient';
@@ -31,6 +31,14 @@ export default function SplashScreen({ navigation }) {
 
   // Naviga solo quando ENTRAMBI sono pronti: splash terminata + sessione verificata
   useEffect(() => {
+    // Intercetta subito il flusso di reset password prima di qualsiasi altra navigazione
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const hash = window.location.hash;
+      if (hash.includes('type=recovery')) {
+        navigation.replace('ResetPassword');
+        return;
+      }
+    }
     if (!splashReady || loading) return;
     navigation.replace(
       isLoggedIn ? (isAdmin ? 'AdminTabs' : 'MainTabs') : 'Login'

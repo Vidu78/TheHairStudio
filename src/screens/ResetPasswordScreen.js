@@ -13,6 +13,13 @@ export default function ResetPasswordScreen({ navigation }) {
   const [done, setDone]           = useState(false);
   const [showPass, setShowPass]   = useState(false);
 
+  useEffect(() => {
+    // Pulisce l'hash URL per evitare ri-trigger del flusso recovery al reload
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location.hash) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
+
   const showAlert = (title, msg) => {
     if (Platform.OS === 'web') window.alert(`${title}\n\n${msg}`);
     else Alert.alert(title, msg);

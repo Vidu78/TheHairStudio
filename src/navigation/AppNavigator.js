@@ -161,9 +161,14 @@ export default function AppNavigator() {
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') {
-        if (navigationRef.isReady()) {
-          navigationRef.navigate('ResetPassword');
-        }
+        const tryNavigate = () => {
+          if (navigationRef.isReady()) {
+            navigationRef.navigate('ResetPassword');
+          } else {
+            setTimeout(tryNavigate, 150);
+          }
+        };
+        tryNavigate();
       }
     });
     return () => subscription.unsubscribe();
