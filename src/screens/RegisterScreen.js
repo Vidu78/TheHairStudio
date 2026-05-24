@@ -20,27 +20,17 @@ export default function RegisterScreen({ navigation }) {
   const [showConfirmPass, setShowConfirmPass] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  const showAlert = (title, msg) => {
+    if (Platform.OS === 'web') window.alert(`${title}\n\n${msg}`);
+    else Alert.alert(title, msg);
+  };
+
   const handleRegister = async () => {
-    if (!name.trim()) {
-      Alert.alert('Attenzione', 'Inserisci il nome completo');
-      return;
-    }
-    if (!email.trim() || !email.includes('@')) {
-      Alert.alert('Attenzione', 'Inserisci un indirizzo email valido');
-      return;
-    }
-    if (!phone.trim()) {
-      Alert.alert('Attenzione', 'Inserisci il numero di telefono');
-      return;
-    }
-    if (password.length < 6) {
-      Alert.alert('Attenzione', 'La password deve essere di almeno 6 caratteri');
-      return;
-    }
-    if (password !== confirmPassword) {
-      Alert.alert('Attenzione', 'Le password non coincidono');
-      return;
-    }
+    if (!name.trim()) { showAlert('Attenzione', 'Inserisci il nome completo'); return; }
+    if (!email.trim() || !email.includes('@')) { showAlert('Attenzione', 'Inserisci un indirizzo email valido'); return; }
+    if (!phone.trim()) { showAlert('Attenzione', 'Inserisci il numero di telefono'); return; }
+    if (password.length < 6) { showAlert('Attenzione', 'La password deve essere di almeno 6 caratteri'); return; }
+    if (password !== confirmPassword) { showAlert('Attenzione', 'Le password non coincidono'); return; }
 
     setLoading(true);
     const result = await registerUser(name.trim(), email.trim().toLowerCase(), phone.trim(), password);
@@ -49,13 +39,18 @@ export default function RegisterScreen({ navigation }) {
     if (result === true) {
       navigation.replace('Welcome', { userName: name.trim() });
     } else if (result === 'confirm') {
-      Alert.alert(
-        '📧 Controlla la tua email!',
-        `Abbiamo inviato un link di conferma a ${email.trim()}.\n\nClicca il link per attivare il tuo account, poi accedi.`,
-        [{ text: 'OK', onPress: () => navigation.replace('Login') }]
-      );
+      if (Platform.OS === 'web') {
+        window.alert(`📧 Controlla la tua email!\n\nAbbiamo inviato un link di conferma a ${email.trim()}.\n\nClicca il link per attivare il tuo account, poi accedi.`);
+        navigation.replace('Login');
+      } else {
+        Alert.alert(
+          '📧 Controlla la tua email!',
+          `Abbiamo inviato un link di conferma a ${email.trim()}.\n\nClicca il link per attivare il tuo account, poi accedi.`,
+          [{ text: 'OK', onPress: () => navigation.replace('Login') }]
+        );
+      }
     } else {
-      Alert.alert('Errore', 'Email già registrata oppure servizio non disponibile. Prova ad accedere.');
+      showAlert('Errore', 'Email già registrata oppure servizio non disponibile. Prova ad accedere.');
     }
   };
 

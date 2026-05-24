@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  Dimensions, Alert, Image, Switch, Platform, TextInput,
+  Dimensions, Alert, Image, Switch, Platform, TextInput, Linking,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
@@ -9,6 +9,7 @@ import { useApp } from '../context/AppContext';
 import { BARBER_PHOTOS, SERVICES } from '../data/appData';
 import { requestPushPermission, isPushSupported, getPushPermissionStatus } from '../utils/pushNotifications';
 import { supabase } from '../config/supabase';
+import { sendConfirmationEmail, buildGoogleCalendarUrl } from '../utils/emailService';
 
 const { width } = Dimensions.get('window');
 
@@ -70,7 +71,7 @@ function AvailabilityChart({ data }) {
 
 
 export default function AdminDashboard({ navigation }) {
-  const { bookings, updateBookingStatus, logout, barbers, setBarberVacation, updateBarberPhoto, pageViews, notifications, markNotificationRead, markAllNotificationsRead } = useApp();
+  const { bookings, updateBookingStatus, fetchBookings, logout, barbers, setBarberVacation, updateBarberPhoto, pageViews, notifications, markNotificationRead, markAllNotificationsRead } = useApp();
   const [activeTab, setActiveTab]       = useState('overview');
   const [pushEnabled, setPushEnabled]   = useState(getPushPermissionStatus() === 'granted');
   const [blockedDates, setBlockedDates] = useState([]);
@@ -90,6 +91,48 @@ export default function AdminDashboard({ navigation }) {
     };
     loadBlocks();
   }, []);
+
+  const handleConfirmFull = async (booking) => {
+    updateBookingStatus(booking.id, 'confirmed');
+    if (fetchBookings) fetchBookings();
+    let clientEmail = '';
+    if (booking.clientId) {
+      try {
+        const { data } = await supabase.from('profiles').select('email').eq('user_id', booking.clientId).single();
+        if (data?.email) clientEmail = data.email;
+      } catch (_) {}
+    }
+    if (clientEmail) {
+      sendConfirmationEmail({
+        to_email: clientEmail, client_name: booking.clientName,
+        barber: booking.barber, service: booking.service,
+        date: booking.date, time: booking.time,
+        price: booking.price, slots: booking.slots || 1,
+      });
+    }
+    const calUrl = buildGoogleCalendarUrl({
+      date: booking.date, time: booking.time,
+      service: booking.service, barber: booking.barber, slots: booking.slots || 1,
+    });
+    if (Platform.OS === 'web') {
+      if (window.confirm(
+        `✅ Prenotazione di ${booking.clientName} confermata.${clientEmail ? `\nEmail inviata a ${clientEmail}.` : ''}\n\nAprire Google Calendar?`
+      )) {
+        window.open(calUrl, '_blank');
+      }
+    } else {
+      Alert.alert(
+        '✅ Confermata',
+        clientEmail
+          ? `Prenotazione confermata.\nEmail inviata a ${clientEmail}.`
+          : `Prenotazione di ${booking.clientName} confermata.`,
+        [
+          { text: 'OK', style: 'cancel' },
+          { text: '📅 Google Calendar', onPress: () => Linking.openURL(calUrl) },
+        ]
+      );
+    }
+  };
 
   const handleTogglePush = async () => {
     if (pushEnabled) {
@@ -392,7 +435,7 @@ export default function AdminDashboard({ navigation }) {
                 <BookingRow
                   key={booking.id}
                   booking={booking}
-                  onStatusChange={updateBookingStatus}
+                  onConfirmFull={handleConfirmFull}
                 />
               ))}
             </View>
@@ -437,7 +480,7 @@ export default function AdminDashboard({ navigation }) {
                   <BookingRow
                     key={booking.id}
                     booking={booking}
-                    onStatusChange={updateBookingStatus}
+                    onConfirmFull={handleConfirmFull}
                     showActions
                   />
                 ))}
@@ -453,7 +496,7 @@ export default function AdminDashboard({ navigation }) {
               <BookingRow
                 key={booking.id}
                 booking={booking}
-                onStatusChange={updateBookingStatus}
+                onConfirmFull={handleConfirmFull}
               />
             ))}
           </View>
@@ -737,7 +780,7 @@ function CancellationCard({ notif, onRead }) {
   );
 }
 
-function BookingRow({ booking, onStatusChange, showActions }) {
+function BookingRow({ booking, onConfirmFull, showActions }) {
   const statusColor = booking.status === 'confirmed' ? '#2ecc71' : '#f39c12';
   const statusLabel = booking.status === 'confirmed' ? '✅ Confermato' : '⏳ In attesa';
 
@@ -757,7 +800,7 @@ function BookingRow({ booking, onStatusChange, showActions }) {
         {showActions && booking.status === 'pending' && (
           <TouchableOpacity
             style={styles.confirmMiniBtn}
-            onPress={() => onStatusChange(booking.id, 'confirmed')}
+            onPress={() => onConfirmFull(booking)}
           >
             <Text style={styles.confirmMiniBtnText}>Conferma</Text>
           </TouchableOpacity>
