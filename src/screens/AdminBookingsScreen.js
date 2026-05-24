@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert,
-  Modal, TextInput, KeyboardAvoidingView, Platform,
+  Modal, TextInput, KeyboardAvoidingView, Platform, Linking,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useApp } from '../context/AppContext';
+import { supabase } from '../config/supabase';
+import { sendConfirmationEmail, buildGoogleCalendarUrl } from '../utils/emailService';
 
 const DAYS_IT = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
 const MONTHS_IT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
@@ -28,10 +30,64 @@ export default function AdminBookingsScreen({ navigation }) {
     ? bookings
     : bookings.filter(b => b.status === filter);
 
-  const handleConfirmAction = (booking) => {
+  const handleConfirmAction = async (booking) => {
     updateBookingStatus(booking.id, 'confirmed');
     fetchBookings?.();
-    Alert.alert('✅', `Prenotazione di ${booking.clientName} confermata`);
+
+    // Recupera email cliente da profilo
+    let clientEmail = '';
+    if (booking.clientId) {
+      try {
+        const { data } = await supabase
+          .from('profiles')
+          .select('email')
+          .eq('user_id', booking.clientId)
+          .single();
+        if (data?.email) clientEmail = data.email;
+      } catch (_) {}
+    }
+
+    // Invia email di conferma con link Google Calendar
+    if (clientEmail) {
+      sendConfirmationEmail({
+        to_email:    clientEmail,
+        client_name: booking.clientName,
+        barber:      booking.barber,
+        service:     booking.service,
+        date:        booking.date,
+        time:        booking.time,
+        price:       booking.price,
+        slots:       booking.slots || 1,
+      });
+    }
+
+    const calUrl = buildGoogleCalendarUrl({
+      date:    booking.date,
+      time:    booking.time,
+      service: booking.service,
+      barber:  booking.barber,
+      slots:   booking.slots || 1,
+    });
+
+    if (Platform.OS === 'web') {
+      const msg = clientEmail
+        ? `Prenotazione di ${booking.clientName} confermata.\nEmail di conferma inviata a ${clientEmail}.`
+        : `Prenotazione di ${booking.clientName} confermata.`;
+      if (window.confirm(`✅ ${msg}\n\nAprire Google Calendar per questa prenotazione?`)) {
+        window.open(calUrl, '_blank');
+      }
+    } else {
+      Alert.alert(
+        '✅ Confermata',
+        clientEmail
+          ? `Prenotazione confermata.\nEmail inviata a ${clientEmail}.`
+          : `Prenotazione di ${booking.clientName} confermata.`,
+        [
+          { text: 'OK', style: 'cancel' },
+          { text: '📅 Google Calendar', onPress: () => Linking.openURL(calUrl) },
+        ]
+      );
+    }
   };
 
   const handleCancelAction = (booking) => {

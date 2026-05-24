@@ -73,7 +73,7 @@ function getBookedTimes(bookings, barberName, dateStr, selectedService) {
 const STEPS = ['Barbiere', 'Servizio', 'Data', 'Orario', 'Conferma'];
 
 export default function BookingScreen({ route, navigation }) {
-  const { addBooking, currentUser, bookings, barbers } = useApp();
+  const { addBooking, updateBooking, currentUser, bookings, barbers } = useApp();
   const preselected = route?.params?.selectedService || null;
 
   const [step, setStep] = useState(0);
@@ -105,7 +105,10 @@ export default function BookingScreen({ route, navigation }) {
       price:      selectedService?.price,
       slots:      selectedService?.slots || 1,
     };
-    await addBooking(booking);
+    const newBooking = await addBooking(booking);
+    if (newBooking?.id) {
+      updateBooking(newBooking.id, { status: 'pending' });
+    }
     setConfirming(false);
     setShowModal(true);
   };

@@ -47,7 +47,12 @@ function useLogoutRedirect() {
 
 function MainTabs() {
   useLogoutRedirect();
+  const { isLoggedIn, fetchBookings } = useApp();
   const insets = useSafeAreaInsets();
+
+  useEffect(() => {
+    if (isLoggedIn) fetchBookings();
+  }, [isLoggedIn]);
   return (
     <Tab.Navigator
       screenOptions={{

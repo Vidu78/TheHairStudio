@@ -6,6 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useApp } from '../context/AppContext';
 import { SALON_INFO } from '../data/appData';
 import { supabase } from '../config/supabase';
+import { buildGoogleCalendarUrl } from '../utils/emailService';
 
 function StarRating({ bookingId, rating, onRate }) {
   return (
@@ -174,6 +175,17 @@ export default function ProfileScreen({ navigation }) {
                       rating={ratings[b.id] || 0}
                       onRate={handleRate}
                     />
+                  )}
+                  {b.status === 'confirmed' && (
+                    <TouchableOpacity
+                      style={styles.calendarBtn}
+                      onPress={() => {
+                        const url = buildGoogleCalendarUrl({ date: b.date, time: b.time, service: b.service, barber: b.barber, slots: b.slots || 1 });
+                        Linking.openURL(url);
+                      }}
+                    >
+                      <Text style={styles.calendarBtnText}>📅 Google Calendar</Text>
+                    </TouchableOpacity>
                   )}
                 </View>
                 <View style={styles.bookingRight}>
@@ -547,6 +559,15 @@ const styles = StyleSheet.create({
   infoCopyright: {
     color: 'rgba(255,255,255,0.2)', fontSize: 11, textAlign: 'center', marginBottom: 20,
   },
+  calendarBtn: {
+    marginTop: 8, flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(66,133,244,0.12)', borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderWidth: 1, borderColor: 'rgba(66,133,244,0.35)',
+    alignSelf: 'flex-start',
+  },
+  calendarBtnText: { color: '#4285F4', fontSize: 12, fontWeight: '700' },
+
   infoCloseBtn: {
     backgroundColor: 'rgba(201,168,76,0.15)', borderRadius: 14, padding: 14,
     alignItems: 'center', borderWidth: 1, borderColor: 'rgba(201,168,76,0.3)',
