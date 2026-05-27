@@ -7,6 +7,7 @@ import { useFonts } from 'expo-font';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { AppProvider } from './src/context/AppContext';
 import AppNavigator from './src/navigation/AppNavigator';
+import InstallPWABanner from './src/components/InstallPWABanner';
 
 export default function App() {
   const [fontsLoaded, fontError] = useFonts({
@@ -31,6 +32,7 @@ export default function App() {
       <AppProvider>
         <StatusBar style="light" />
         <AppNavigator />
+        <InstallPWABanner />
       </AppProvider>
     </SafeAreaProvider>
   );

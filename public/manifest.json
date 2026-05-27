@@ -1,0 +1,33 @@
+{
+  "name": "The Hair Studio",
+  "short_name": "Hair Studio",
+  "description": "Prenota il tuo appuntamento al The Hair Studio – Noci (BA)",
+  "lang": "it",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0A0A0A",
+  "theme_color": "#C9A84C",
+  "categories": ["lifestyle", "business"],
+  "icons": [
+    {
+      "src": "/logo192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
