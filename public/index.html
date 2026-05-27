@@ -27,11 +27,12 @@
   <style>
     html, body, #root { height: 100%; }
     body { margin: 0; background: #0A0A0A; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
-    /* Splash mentre carica il bundle JS — sparisce non appena React monta */
     #pwa-boot {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-      background: #0A0A0A; z-index: 0;
+      background: #0A0A0A; z-index: 1; pointer-events: none;
+      transition: opacity .3s ease;
     }
+    #pwa-boot.is-hidden { opacity: 0; }
     #pwa-boot .logo {
       width: 96px; height: 96px; border-radius: 48px;
       background: rgba(201,168,76,0.15);
@@ -42,40 +43,31 @@
   </style>
 </head>
 <body>
-  <div id="root">
-    <div id="pwa-boot"><div class="logo">&#9986;</div></div>
-  </div>
+  <div id="root"></div>
+  <div id="pwa-boot" aria-hidden="true"><div class="logo">&#9986;</div></div>
 
-  <!-- Service Worker registration: registra /sw.js e notifica gli aggiornamenti via CustomEvent -->
+  <!-- Nasconde lo splash quando React ha montato qualcosa in #root -->
   <script>
     (function () {
-      if (!('serviceWorker' in navigator)) return;
-      window.addEventListener('load', function () {
-        navigator.serviceWorker.register('/sw.js').then(function (reg) {
-          // Quando viene trovato un nuovo SW
-          reg.addEventListener('updatefound', function () {
-            var newWorker = reg.installing;
-            if (!newWorker) return;
-            newWorker.addEventListener('statechange', function () {
-              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                // C'e' una nuova versione installata e un controller attivo:
-                // notifica il banner di aggiornamento.
-                window.__PWA_NEW_WORKER__ = newWorker;
-                window.dispatchEvent(new CustomEvent('pwa-update-available'));
-              }
-            });
-          });
-        }).catch(function (err) { console.warn('[PWA] SW register fail:', err); });
-
-        // Quando il nuovo SW prende il controllo, ricarica per servire la nuova versione
-        var reloaded = false;
-        navigator.serviceWorker.addEventListener('controllerchange', function () {
-          if (reloaded) return;
-          reloaded = true;
-          window.location.reload();
-        });
+      var root = document.getElementById('root');
+      var boot = document.getElementById('pwa-boot');
+      if (!root || !boot) return;
+      var hide = function () {
+        boot.classList.add('is-hidden');
+        setTimeout(function () { if (boot.parentNode) boot.parentNode.removeChild(boot); }, 400);
+      };
+      // MutationObserver: appena React inietta children in #root, nascondi
+      var mo = new MutationObserver(function () {
+        if (root.children.length > 0) { mo.disconnect(); hide(); }
       });
+      mo.observe(root, { childList: true });
+      // Safety: rimuovi comunque dopo 15s (il recovery banner di sw-register.js
+      // prenderà il sopravvento se serve davvero)
+      setTimeout(hide, 15000);
     })();
   </script>
+
+  <!-- Service Worker registration + banner aggiornamento vanilla -->
+  <script src="/sw-register.js" defer></script>
 </body>
 </html>
