@@ -3,14 +3,12 @@ import 'react-native-gesture-handler';
 import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, Platform } from 'react-native';
 
-// Top-level ErrorBoundary indipendente dagli altri import.
-// Se App.js crasha durante render, questo lo cattura comunque.
+// Top-level ErrorBoundary indipendente: cattura errori di render di App.
 class TopErrorBoundary extends React.Component {
   state = { error: null };
   static getDerivedStateFromError(error) { return { error }; }
   componentDidCatch(error, info) {
     try { console.error('[TopErrorBoundary]', error, info?.componentStack); } catch (_) {}
-    // Espone l'errore anche al window.onerror handler dell'HTML
     try {
       if (typeof window !== 'undefined' && window.dispatchEvent) {
         window.dispatchEvent(new ErrorEvent('error', {
@@ -28,7 +26,7 @@ class TopErrorBoundary extends React.Component {
         <View style={{ flex: 1, backgroundColor: '#0A0A0A', minHeight: '100vh' }}>
           <ScrollView contentContainerStyle={{ padding: 24, paddingTop: 60 }}>
             <Text style={{ color: '#C9A84C', fontSize: 22, fontWeight: '900', marginBottom: 8 }}>
-              ⚠️ App crashed (top)
+              ⚠️ App crashed
             </Text>
             <Text style={{ color: '#fff', fontSize: 13, marginBottom: 12, fontFamily: Platform.OS === 'web' ? 'monospace' : undefined }}>
               {msg}
@@ -58,15 +56,11 @@ class TopErrorBoundary extends React.Component {
   }
 }
 
-// Importa App SOLO dopo aver definito TopErrorBoundary.
-// Se App fallisce import-time, lo cattura window.onerror nell'HTML.
 let App;
 try {
-  // eslint-disable-next-line global-require
   App = require('./App').default;
 } catch (importErr) {
   try { console.error('[index.js] App import failed:', importErr); } catch (_) {}
-  // Fallback: renderizziamo direttamente l'errore
   App = function FallbackApp() {
     const msg = String(importErr?.message || importErr);
     return (

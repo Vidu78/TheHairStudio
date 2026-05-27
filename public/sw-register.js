@@ -4,16 +4,6 @@
 (function () {
   'use strict';
 
-  // Marker visibile per debug — l'utente puo' vedere se questo script gira
-  // Lo nascondiamo non appena React monta (vedi MutationObserver in index.html)
-  try {
-    var dbg = document.createElement('div');
-    dbg.id = 'pwa-debug-marker';
-    dbg.style.cssText = 'position:fixed;top:env(safe-area-inset-top,8px);left:8px;font-family:monospace;font-size:9px;color:#C9A84C;opacity:0.4;z-index:2;pointer-events:none;';
-    dbg.textContent = 'sw-register OK';
-    if (document.body) document.body.appendChild(dbg);
-  } catch (_) {}
-
   if (!('serviceWorker' in navigator)) return;
 
   var WORKBOX_CACHE_PATTERNS = [
