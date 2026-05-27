@@ -33,14 +33,15 @@ self.addEventListener('install', (event) => {
 
 // ─── ACTIVATE ──────────────────────────────────────────────────────────────
 // Cancella TUTTE le cache che non corrispondono alla versione corrente.
-// Indispensabile per recuperare client bloccati su HTML stale che puntava
-// a un bundle ormai cancellato dal deploy.
+// IMPORTANTE: cancelliamo anche cache di SW precedenti (Workbox: pages-cache,
+// expo-bundle-cache, img-v1, fonts-v1, api-cache) per recuperare client
+// bloccati su HTML stale che puntava a un bundle ormai cancellato dal deploy.
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
       await Promise.all(
-        keys.map((k) => (k.startsWith('pwa-cache-') && k !== CACHE_NAME) ? caches.delete(k) : null)
+        keys.map((k) => (k !== CACHE_NAME) ? caches.delete(k) : Promise.resolve())
       );
       await self.clients.claim();
     })()
