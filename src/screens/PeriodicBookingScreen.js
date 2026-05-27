@@ -36,13 +36,16 @@ function generateNextDates(intervalDays, count = 6) {
 }
 
 export default function PeriodicBookingScreen({ navigation }) {
-  const { addPeriodicBooking, periodicBookings, currentUser, barbers } = useApp();
+  const { addPeriodicBooking, periodicBookings, currentUser, barbers, hasActivePeriodic } = useApp();
   const availableBarbers = barbers.length > 0 ? barbers : BARBERS;
   const [selectedPeriod, setSelectedPeriod] = useState(null);
   const [selectedService, setSelectedService] = useState(null);
   const [selectedBarber, setSelectedBarber] = useState(null);
   const [selectedTime, setSelectedTime] = useState('09:00');
   const [step, setStep] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+
+  const activePeriodic = currentUser?.id ? hasActivePeriodic(currentUser.id) : null;
 
   const TIMES = [
     '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30',
@@ -54,7 +57,10 @@ export default function PeriodicBookingScreen({ navigation }) {
     ? generateNextDates(selectedPeriod.intervalDays)
     : [];
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    if (submitting) return;
+    if (!selectedPeriod || !selectedService || !selectedBarber) return;
+    setSubmitting(true);
     const periodic = {
       clientName: currentUser?.name || 'Ospite',
       clientId:   currentUser?.id   || null,
@@ -65,21 +71,99 @@ export default function PeriodicBookingScreen({ navigation }) {
       barber: selectedBarber.name,
       time: selectedTime,
       price: selectedService.price,
-      nextDates: previewDates.map(d => d.toISOString().split('T')[0]),
+      slots: selectedService.slots ?? 1,
     };
-    addPeriodicBooking(periodic);
-    const msg = `${selectedPeriod.label} con ${selectedBarber.name}\nServizio: ${selectedService.name} — €${selectedService.price}\n\nRiceverai un promemoria prima di ogni appuntamento.`;
-    if (Platform.OS === 'web') {
-      window.alert('🔄 Prenotazione Periodica Attivata!\n\n' + msg);
-      navigation.navigate('Home');
-    } else {
-      Alert.alert(
-        '🔄 Prenotazione Periodica Attivata!',
-        msg,
-        [{ text: 'Fantastico! 🎉', onPress: () => navigation.navigate('Home') }]
-      );
+    try {
+      const res = await addPeriodicBooking(periodic);
+      const occurrences = res?.count || previewDates.length;
+      const msg = `${selectedPeriod.label} con ${selectedBarber.name}\nServizio: ${selectedService.name} — €${selectedService.price}\n\nGenerate ${occurrences} occorrenze per i prossimi 12 mesi.\nVincolo annuale: per fare altri tipi di prenotazioni devi prima disattivare l'abbonamento dal Profilo.`;
+      if (Platform.OS === 'web') {
+        window.alert('🔄 Prenotazione Periodica Attivata!\n\n' + msg);
+        navigation.navigate('Home');
+      } else {
+        Alert.alert(
+          '🔄 Prenotazione Periodica Attivata!',
+          msg,
+          [{ text: 'Fantastico! 🎉', onPress: () => navigation.navigate('Home') }]
+        );
+      }
+    } catch (e) {
+      const detail = e?.message || 'errore sconosciuto';
+      if (Platform.OS === 'web') {
+        window.alert(`⚠️ Impossibile attivare la periodica\n\n${detail}`);
+      } else {
+        Alert.alert('Errore', detail);
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
+
+  // BLOCCO: se ne ha già una attiva, mostra solo il riepilogo + invito a disattivarla
+  if (activePeriodic) {
+    return (
+      <View style={styles.container}>
+        <LinearGradient colors={['#0A0A0A', '#141414']} style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.navigate('Home')} style={styles.backBtn}>
+            <Text style={styles.backIcon}>‹</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Prenotazione Periodica</Text>
+          <View style={{ width: 40 }} />
+        </LinearGradient>
+        <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 32 }}>
+          <View style={stylesBlock.card}>
+            <LinearGradient colors={['rgba(46,204,113,0.18)', 'rgba(46,204,113,0.05)']} style={stylesBlock.grad}>
+              <View style={stylesBlock.iconCircle}>
+                <Text style={stylesBlock.icon}>✅</Text>
+              </View>
+              <Text style={stylesBlock.title}>Abbonamento già Attivo</Text>
+              <Text style={stylesBlock.subtitle}>Hai una prenotazione periodica in corso</Text>
+
+              <View style={stylesBlock.box}>
+                <Text style={stylesBlock.boxLabel}>Frequenza</Text>
+                <Text style={stylesBlock.boxValue}>{activePeriodic.periodLabel}</Text>
+              </View>
+              <View style={stylesBlock.box}>
+                <Text style={stylesBlock.boxLabel}>Servizio</Text>
+                <Text style={stylesBlock.boxValue}>{activePeriodic.service}</Text>
+              </View>
+              <View style={stylesBlock.box}>
+                <Text style={stylesBlock.boxLabel}>Barbiere</Text>
+                <Text style={stylesBlock.boxValue}>{activePeriodic.barber}</Text>
+              </View>
+              <View style={stylesBlock.box}>
+                <Text style={stylesBlock.boxLabel}>Orario fisso</Text>
+                <Text style={stylesBlock.boxValue}>🕐 {activePeriodic.time}</Text>
+              </View>
+
+              <View style={stylesBlock.warn}>
+                <Text style={stylesBlock.warnIcon}>ℹ️</Text>
+                <Text style={stylesBlock.warnText}>
+                  Puoi avere <Text style={{ fontWeight: '900', color: '#C9A84C' }}>una sola periodica attiva alla volta</Text>. Vincolo annuale. Per cambiarla o annullarla vai sul tuo Profilo.
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={stylesBlock.btnPrimary}
+                onPress={() => navigation.navigate('Profile')}
+              >
+                <LinearGradient colors={['#C9A84C', '#A87C30']} style={stylesBlock.btnGrad}>
+                  <Text style={stylesBlock.btnText}>Vai al Profilo →</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={stylesBlock.btnSecondary}
+                onPress={() => navigation.navigate('Home')}
+              >
+                <Text style={stylesBlock.btnSecondaryText}>Torna alla Home</Text>
+              </TouchableOpacity>
+            </LinearGradient>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -105,6 +189,17 @@ export default function PeriodicBookingScreen({ navigation }) {
             <Text style={styles.bannerSub}>Prenota automaticamente il tuo taglio con cadenza fissa. Prezzi invariati.</Text>
           </View>
         </LinearGradient>
+
+        {/* Avviso vincolo annuale */}
+        <View style={styles.lockBanner}>
+          <Text style={styles.lockBannerIcon}>⚠️</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.lockBannerTitle}>Vincolo Annuale Esclusivo</Text>
+            <Text style={styles.lockBannerSub}>
+              Genera 1 anno di appuntamenti automatici. Finché è attiva non potrai fare altre prenotazioni singole, dovrai prima disattivarla dal Profilo.
+            </Text>
+          </View>
+        </View>
 
         {/* Step 0: Frequenza */}
         <View style={styles.section}>
@@ -260,19 +355,19 @@ export default function PeriodicBookingScreen({ navigation }) {
       <View style={styles.footer}>
         <TouchableOpacity
           style={[styles.confirmBtn,
-          !(selectedPeriod && selectedService && selectedBarber) && styles.confirmBtnDisabled]}
+          (!(selectedPeriod && selectedService && selectedBarber) || submitting) && styles.confirmBtnDisabled]}
           onPress={handleConfirm}
-          disabled={!(selectedPeriod && selectedService && selectedBarber)}
+          disabled={!(selectedPeriod && selectedService && selectedBarber) || submitting}
         >
           <LinearGradient
-            colors={(selectedPeriod && selectedService && selectedBarber)
+            colors={(selectedPeriod && selectedService && selectedBarber && !submitting)
               ? ['#C9A84C', '#A87C30'] : ['#333', '#333']}
             style={styles.confirmGrad}
             start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
           >
             <Text style={[styles.confirmText,
-            !(selectedPeriod && selectedService && selectedBarber) && { color: '#666' }]}>
-              🔄 Attiva Prenotazione Periodica
+            (!(selectedPeriod && selectedService && selectedBarber) || submitting) && { color: '#666' }]}>
+              {submitting ? '⏳ Generazione 1 anno...' : '🔄 Attiva Prenotazione Periodica'}
             </Text>
           </LinearGradient>
         </TouchableOpacity>
@@ -399,4 +494,50 @@ const styles = StyleSheet.create({
   confirmBtnDisabled: { opacity: 0.5 },
   confirmGrad: { paddingVertical: 16, alignItems: 'center' },
   confirmText: { color: '#000000', fontWeight: '800', fontSize: 16 },
+
+  lockBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
+    marginHorizontal: 20, marginBottom: 18,
+    padding: 14, borderRadius: 12,
+    backgroundColor: 'rgba(243,156,18,0.1)',
+    borderWidth: 1, borderColor: 'rgba(243,156,18,0.35)',
+  },
+  lockBannerIcon: { fontSize: 22 },
+  lockBannerTitle: { color: '#f39c12', fontWeight: '900', fontSize: 13, marginBottom: 4 },
+  lockBannerSub: { color: 'rgba(255,255,255,0.75)', fontSize: 12, lineHeight: 16 },
+});
+
+const stylesBlock = StyleSheet.create({
+  card: { borderRadius: 18, overflow: 'hidden', borderWidth: 1.5, borderColor: 'rgba(46,204,113,0.4)' },
+  grad: { padding: 22, alignItems: 'center' },
+  iconCircle: {
+    width: 80, height: 80, borderRadius: 40,
+    backgroundColor: 'rgba(46,204,113,0.18)',
+    borderWidth: 2, borderColor: '#2ecc71',
+    alignItems: 'center', justifyContent: 'center', marginBottom: 14,
+  },
+  icon: { fontSize: 40 },
+  title: { color: '#FFFFFF', fontSize: 20, fontWeight: '900', textAlign: 'center' },
+  subtitle: { color: '#2ecc71', fontSize: 12, fontWeight: '700', marginTop: 4, letterSpacing: 1, marginBottom: 20 },
+  box: {
+    width: '100%', backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 12,
+    paddingVertical: 10, paddingHorizontal: 14, marginBottom: 8,
+    borderWidth: 1, borderColor: 'rgba(46,204,113,0.15)',
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+  },
+  boxLabel: { color: 'rgba(255,255,255,0.5)', fontSize: 12, fontWeight: '600' },
+  boxValue: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+  warn: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    backgroundColor: 'rgba(201,168,76,0.1)', borderRadius: 12,
+    padding: 14, marginTop: 14, marginBottom: 18,
+    borderWidth: 1, borderColor: 'rgba(201,168,76,0.35)',
+  },
+  warnIcon: { fontSize: 22 },
+  warnText: { flex: 1, color: 'rgba(255,255,255,0.85)', fontSize: 13, lineHeight: 18 },
+  btnPrimary: { width: '100%', borderRadius: 14, overflow: 'hidden' },
+  btnGrad: { paddingVertical: 15, alignItems: 'center' },
+  btnText: { color: '#000000', fontWeight: '900', fontSize: 15 },
+  btnSecondary: { marginTop: 10, paddingVertical: 12, alignItems: 'center' },
+  btnSecondaryText: { color: 'rgba(255,255,255,0.55)', fontSize: 14 },
 });

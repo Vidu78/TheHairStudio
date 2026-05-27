@@ -5,26 +5,17 @@ import { sendBookingEmail, sendCancellationEmail, sendWelcomeEmail } from '../ut
 
 const AppContext = createContext();
 
-// ─── Session cache + credential cache (web) ──────────────────────────────────
-// SESSION_KEY: profilo utente persistito per evitare re-login ad ogni hot-reload.
-// CRED_KEY: credenziali offuscate (btoa) usate come fallback quando Supabase è in pausa.
-const SESSION_KEY = 'ths_session_cache';
-const CRED_KEY    = 'ths_cred_cache';
-
-const _saveCache     = (user) => { try { localStorage.setItem(SESSION_KEY, JSON.stringify(user)); } catch(_) {} };
-const _loadCache     = () => { try { const r = localStorage.getItem(SESSION_KEY); return r ? JSON.parse(r) : null; } catch(_) { return null; } };
-const _clearCache    = () => { try { localStorage.removeItem(SESSION_KEY); } catch(_) {} };
-
-const _saveCredCache  = (email, password) => { try { localStorage.setItem(CRED_KEY, btoa(JSON.stringify({ e: email, p: password }))); } catch(_) {} };
-const _checkCredCache = (email, password) => { try { const raw = localStorage.getItem(CRED_KEY); if (!raw) return false; const { e, p } = JSON.parse(atob(raw)); return e === email && p === password; } catch(_) { return false; } };
-const _clearCredCache = () => { try { localStorage.removeItem(CRED_KEY); } catch(_) {} };
+// Pulisce eventuale cache ths_session_cache residua da versioni precedenti.
+// Ora la session è gestita ESCLUSIVAMENTE da Supabase (localStorage 'sb-*').
+try { localStorage.removeItem('ths_session_cache'); } catch (_) {}
+try { localStorage.removeItem('ths_cred_cache');    } catch (_) {}
 
 export const AppProvider = ({ children }) => {
-  // Leggiamo subito la cache: se l'utente era già loggato, partiamo già autenticati
-  const _cached = _loadCache();
-  const [isLoggedIn, setIsLoggedIn]   = useState(_cached != null);
-  const [isAdmin, setIsAdmin]         = useState(_cached?.role === 'admin');
-  const [currentUser, setCurrentUser] = useState(_cached);
+  // Stato iniziale sempre "non loggato": l'auth state verrà ricostruito da
+  // onAuthStateChange leggendo la session reale di Supabase al boot.
+  const [isLoggedIn, setIsLoggedIn]   = useState(false);
+  const [isAdmin, setIsAdmin]         = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
   const [bookings, setBookings]       = useState([]);
   const [periodicBookings, setPeriodicBookings] = useState([]);
   const [users, setUsers]             = useState([]);
@@ -32,8 +23,7 @@ export const AppProvider = ({ children }) => {
     BARBERS.map(b => ({ ...b, onVacation: false, photoOverride: null }))
   );
   const [notifications, setNotifications] = useState([]);
-  // Se c'è la cache non blocchiamo la navigazione mentre Supabase risponde
-  const [loading, setLoading]         = useState(_cached == null);
+  const [loading, setLoading]         = useState(true);
   const [pageViews, setPageViews]     = useState(0);
   const channelRef = useRef(null);
 
@@ -47,30 +37,20 @@ export const AppProvider = ({ children }) => {
     }, 6000);
 
     // Supabase v2 emette INITIAL_SESSION all'avvio (con o senza sessione attiva).
-    // Gestiamo qui tutti gli eventi rilevanti invece di usare getSession().
+    // Single source of truth: la session di Supabase + validazione server-side via getUser.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (!mounted) return;
 
         if (session?.user) {
           await applySession(session);
-        } else if (event === 'SIGNED_OUT') {
-          // Logout esplicito: azzera tutto
+        } else {
+          // Nessuna session: logout completo (vale per SIGNED_OUT, INITIAL_SESSION senza session, ecc.)
           setIsLoggedIn(false);
           setIsAdmin(false);
           setCurrentUser(null);
-          _clearCache();
-        } else if (event === 'INITIAL_SESSION') {
-          // Nessuna sessione Supabase attiva — se abbiamo la cache locale la manteniamo
-          // (Supabase potrebbe essere in pausa o lento); altrimenti forziamo il logout
-          if (!_loadCache()) {
-            setIsLoggedIn(false);
-            setIsAdmin(false);
-            setCurrentUser(null);
-          }
         }
 
-        // Dopo INITIAL_SESSION sappiamo lo stato → fine loading
         if (event === 'INITIAL_SESSION' && mounted) {
           clearTimeout(safetyTimer);
           setLoading(false);
@@ -104,18 +84,17 @@ export const AppProvider = ({ children }) => {
     if (email === ADMIN_CREDENTIALS.email.toLowerCase()) {
       setIsAdmin(true);
       setIsLoggedIn(true);
-      setCurrentUser({ name: 'Admin', email, role: 'admin' });
-      return;
+      setCurrentUser({ id: session.user.id, name: 'Admin', email, role: 'admin' });
+      return { id: session.user.id, name: 'Admin', email, role: 'admin' };
     }
 
     let profile = null;
     try {
-      const { data } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('user_id', session.user.id)
-        .single();
-      profile = data;
+      const profileResult = await Promise.race([
+        supabase.from('profiles').select('*').eq('user_id', session.user.id).single(),
+        new Promise((_, r) => setTimeout(() => r(new Error('profile_timeout')), 3000)),
+      ]);
+      profile = profileResult?.data;
     } catch (_) {}
 
     const user = {
@@ -129,7 +108,7 @@ export const AppProvider = ({ children }) => {
     setIsAdmin(false);
     setIsLoggedIn(true);
     setCurrentUser(user);
-    _saveCache(user);
+    return user;
   };
 
   // ─── DATA ─────────────────────────────────────────────────────────────────
@@ -159,8 +138,49 @@ export const AppProvider = ({ children }) => {
         .order('date', { ascending: true })
         .order('time', { ascending: true });
       if (!error && data) {
-        setBookings(data.filter(b => !b.is_periodic).map(mapBooking));
-        setPeriodicBookings(data.filter(b => b.is_periodic).map(mapBooking));
+        // TUTTE le prenotazioni (incluse le occorrenze periodiche) finiscono in `bookings`
+        // così il calendario admin le mostra correttamente.
+        const all = data.map(mapBooking);
+        setBookings(all);
+
+        // periodicBookings = una riga sintetica per ogni "serie" attiva
+        // (raggruppata per cliente + frequenza + barbiere + servizio + orario).
+        // Una serie è "attiva" se ha almeno un'occorrenza futura non cancellata.
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const seriesMap = new Map();
+        all.forEach(b => {
+          if (!b.isPeriodic) return;
+          if (b.status === 'cancelled') return;
+          if (b.date < todayStr) return;
+          const key = `${b.clientId || b.clientName}__${b.frequency}__${b.barber}__${b.service}__${b.time}`;
+          if (!seriesMap.has(key)) {
+            const periodLabel = b.frequency === 'weekly'   ? 'Ogni Settimana'
+                              : b.frequency === 'biweekly' ? 'Ogni 15 Giorni'
+                              : b.frequency === 'monthly'  ? 'Ogni Mese'
+                              : 'Periodica';
+            seriesMap.set(key, {
+              id:           `series-${key}`,
+              clientId:     b.clientId,
+              clientName:   b.clientName,
+              service:      b.service,
+              barber:       b.barber,
+              time:         b.time,
+              price:        b.price,
+              slots:        b.slots,
+              frequency:    b.frequency,
+              periodType:   b.frequency,
+              periodLabel,
+              isPeriodic:   true,
+              active:       true,
+              nextDates:    [],
+              occurrenceIds: [],
+            });
+          }
+          const series = seriesMap.get(key);
+          series.nextDates.push(b.date);
+          series.occurrenceIds.push(b.id);
+        });
+        setPeriodicBookings(Array.from(seriesMap.values()));
       }
     } catch (_) {}
   };
@@ -174,7 +194,7 @@ export const AppProvider = ({ children }) => {
     time:       b.time,
     barber:     b.barber,
     price:      b.price,
-    slots:      b.slots || 1,
+    slots:      b.slots ?? 1,
     status:     b.status,
     isPeriodic: b.is_periodic,
     frequency:  b.periodic_frequency,
@@ -183,140 +203,103 @@ export const AppProvider = ({ children }) => {
   // ─── AUTH ─────────────────────────────────────────────────────────────────
   const loginAdmin = async (email, password) => {
     const emailLow = email.trim().toLowerCase();
-    const passTrim = password.trim();
-
-    // Controlla subito il fallback locale: se Supabase è irraggiungibile non aspettiamo
-    const isLocalAdmin =
-      emailLow === ADMIN_CREDENTIALS.email.toLowerCase() &&
-      passTrim  === ADMIN_CREDENTIALS.password;
-
-    // Tenta Supabase con timeout interno di 5s
+    if (emailLow !== ADMIN_CREDENTIALS.email.toLowerCase()) return false;
     try {
       const result = await Promise.race([
-        supabase.auth.signInWithPassword({ email: emailLow, password: passTrim }),
-        new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 5000)),
+        supabase.auth.signInWithPassword({ email: emailLow, password: password.trim() }),
+        new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 8000)),
       ]);
       const { data, error } = result;
-      if (!error && data?.user) {
-        const adminUser = { name: 'Admin', email: emailLow, role: 'admin' };
-        setIsAdmin(true);
-        setIsLoggedIn(true);
-        setCurrentUser(adminUser);
-        _saveCache(adminUser);
-        return true;
+      if (error || !data?.user) return false;
+      // Applica la session IMMEDIATAMENTE: non aspettare onAuthStateChange,
+      // così quando ritorniamo true lo state isAdmin/isLoggedIn è già aggiornato.
+      if (data.session) {
+        try { await applySession(data.session); } catch (_) {}
       }
-    } catch (_) {
-      // Supabase timeout o irraggiungibile → usa fallback locale
-    }
-
-    // Fallback locale (funziona anche offline / Supabase in pausa)
-    if (isLocalAdmin) {
-      const adminUser = { name: 'Admin', email: ADMIN_CREDENTIALS.email, role: 'admin' };
-      setIsAdmin(true);
-      setIsLoggedIn(true);
-      setCurrentUser(adminUser);
-      _saveCache(adminUser);
       return true;
+    } catch (_) {
+      return false;
     }
-    return false;
   };
 
   const loginUser = async (email, password) => {
     const emailLow = email.trim().toLowerCase();
-    const passTrim = password.trim();
-
-    // Tentativo Supabase con timeout interno di 5 secondi
     try {
       const result = await Promise.race([
-        supabase.auth.signInWithPassword({ email: emailLow, password: passTrim }),
-        new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 5000)),
+        supabase.auth.signInWithPassword({ email: emailLow, password: password.trim() }),
+        new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 8000)),
       ]);
-
       const { data, error } = result;
-
       if (error) {
         const msg = error.message?.toLowerCase() ?? '';
-        if (msg.includes('email not confirmed') || msg.includes('email_not_confirmed')) {
-          return 'unconfirmed';
+        if (msg.includes('email not confirmed') || msg.includes('email_not_confirmed')) return 'unconfirmed';
+        return false;
+      }
+      if (data?.user) {
+        // Applica la session SUBITO: garantisce che currentUser/isLoggedIn
+        // siano popolati prima del navigate() del LoginScreen.
+        if (data.session) {
+          try { await applySession(data.session); } catch (_) {}
         }
-        // Supabase risponde ma le credenziali sono sbagliate → non usare il fallback
-        if (msg.includes('invalid') || msg.includes('wrong') || msg.includes('credentials')) {
-          return false;
-        }
-        // Altro errore Supabase → prova il fallback locale
-      } else if (data?.user) {
-        // ✅ Supabase OK
-        let profile = null;
-        try {
-          const { data: p } = await supabase.from('profiles').select('*').eq('user_id', data.user.id).single();
-          profile = p;
-        } catch (_) {}
-
-        const user = {
-          id:    data.user.id,
-          name:  profile?.name  ?? emailLow,
-          email: emailLow,
-          phone: profile?.phone ?? '',
-          role:  'user',
-        };
-        setIsAdmin(false);
-        setIsLoggedIn(true);
-        setCurrentUser(user);
-        _saveCache(user);
-        _saveCredCache(emailLow, passTrim); // salva cred per uso offline
         return true;
       }
+      return false;
     } catch (_) {
-      // Supabase irraggiungibile (pausa, timeout, rete) → usa fallback
+      return false; // timeout o rete
     }
-
-    // ─── Fallback offline ────────────────────────────────────────────────────
-    // Se Supabase non risponde E le credenziali corrispondono alla cache locale
-    if (_checkCredCache(emailLow, passTrim)) {
-      const cached = _loadCache();
-      if (cached && cached.email === emailLow) {
-        setIsAdmin(false);
-        setIsLoggedIn(true);
-        setCurrentUser(cached);
-        return true;
-      }
-    }
-
-    return false;
   };
 
   // Ritorna true se ok, 'confirm' se serve conferma email, false se errore
   const registerUser = async (name, email, phone, password) => {
+    const emailLow = email.trim().toLowerCase();
+    const passTrim = password.trim();
+    // Pulisce qualsiasi session residua prima del signUp (evita conflitti con account cancellati lato Dashboard)
+    try { await supabase.auth.signOut(); } catch (_) {}
     try {
       const result = await Promise.race([
-        supabase.auth.signUp({ email: email.trim().toLowerCase(), password: password.trim() }),
+        supabase.auth.signUp({ email: emailLow, password: passTrim }),
         new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 8000)),
       ]);
       const { data, error } = result;
-
       if (error) return false;
 
       // Salva profilo
-      try {
-        await supabase.from('profiles').insert({
-          user_id: data.user?.id,
-          name:    name.trim(),
-          email:   email.trim().toLowerCase(),
-          phone:   phone.trim(),
-          role:    'user',
-        });
-      } catch (_) {}
+      if (data?.user?.id) {
+        try {
+          await supabase.from('profiles').insert({
+            user_id: data.user.id,
+            name:    name.trim(),
+            email:   emailLow,
+            phone:   phone.trim(),
+            role:    'user',
+          });
+        } catch (_) {}
+      }
 
       // Invia email di benvenuto (fire-and-forget)
-      sendWelcomeEmail({ to_email: email.trim().toLowerCase(), client_name: name.trim() });
+      sendWelcomeEmail({ to_email: emailLow, client_name: name.trim() });
 
-      // Se c'è già una sessione attiva → auto-login
-      if (data.session) {
-        const user = { id: data.user.id, name: name.trim(), email: email.trim().toLowerCase(), phone: phone.trim(), role: 'user' };
+      // Garantisce una sessione attiva facendo signIn esplicito subito dopo il signUp.
+      // Se Confirm Email è OFF su Supabase questo funziona; altrimenti ritorna error "email not confirmed".
+      try {
+        const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
+          email: emailLow, password: passTrim,
+        });
+        if (!loginError && loginData?.session?.user?.id) {
+          const user = { id: loginData.session.user.id, name: name.trim(), email: emailLow, phone: phone.trim(), role: 'user' };
+          setIsAdmin(false);
+          setIsLoggedIn(true);
+          setCurrentUser(user);
+          return true;
+        }
+      } catch (_) {}
+
+      // Fallback: se signUp aveva già restituito una session valida la usiamo
+      if (data?.session?.user?.id) {
+        const user = { id: data.session.user.id, name: name.trim(), email: emailLow, phone: phone.trim(), role: 'user' };
         setIsAdmin(false);
         setIsLoggedIn(true);
         setCurrentUser(user);
-        _saveCache(user);
         return true;
       }
 
@@ -328,8 +311,6 @@ export const AppProvider = ({ children }) => {
   };
 
   const logout = async () => {
-    _clearCache();
-    _clearCredCache();
     try { await supabase.auth.signOut(); } catch (_) {}
     setIsLoggedIn(false);
     setIsAdmin(false);
@@ -342,8 +323,46 @@ export const AppProvider = ({ children }) => {
 
   // ─── BOOKINGS ─────────────────────────────────────────────────────────────
   const addBooking = async (booking) => {
+    console.log('[addBooking] start', booking);
+    // Legge la session con timeout di sicurezza: se getSession si blocca,
+    // sblocchiamo dopo 3s e proviamo comunque (il JWT eventualmente sara' verificato dall'INSERT)
+    let sess = null;
+    try {
+      const sessResult = await Promise.race([
+        supabase.auth.getSession(),
+        new Promise((_, r) => setTimeout(() => r(new Error('getSession_timeout')), 3000)),
+      ]);
+      sess = sessResult?.data;
+    } catch (err) {
+      console.warn('[addBooking] getSession fallito/timeout:', err?.message);
+    }
+    const authUserId = sess?.session?.user?.id ?? null;
+    console.log('[addBooking] authUserId =', authUserId);
+    if (!authUserId) {
+      throw new Error('Devi effettuare l\'accesso prima di prenotare.');
+    }
+
+    // Regola business: ogni cliente puo' avere UNA SOLA prenotazione attiva per giorno.
+    // L'admin (isAdmin) e' esentato per poter prenotare a nome di clienti diversi.
+    if (!isAdmin) {
+      const sameDayActive = bookings.find(b =>
+        b.clientId === authUserId &&
+        b.date === booking.date &&
+        b.status !== 'cancelled'
+      );
+      if (sameDayActive) {
+        throw new Error(`Hai già una prenotazione attiva per il ${booking.date} alle ${sameDayActive.time} (${sameDayActive.service}). Annullala prima di prenotarne un'altra per lo stesso giorno.`);
+      }
+      // Regola business: se hai una prenotazione PERIODICA attiva (vincolo annuale),
+      // non puoi prenotare altri servizi finché non la disattivi.
+      const activeSeries = periodicBookings.find(p => p.clientId === authUserId && p.active !== false);
+      if (activeSeries) {
+        throw new Error(`Hai una prenotazione periodica attiva (${activeSeries.periodLabel} — ${activeSeries.service} con ${activeSeries.barber}). La periodica ha durata annuale: per prenotare altri servizi devi prima disattivarla dal tuo Profilo.`);
+      }
+    }
+
     const emailParams = {
-      to_email:    currentUser?.email || booking.clientEmail || '',
+      to_email:    sess?.session?.user?.email || currentUser?.email || booking.clientEmail || '',
       client_name: booking.clientName,
       barber:      booking.barber,
       service:     booking.service,
@@ -351,69 +370,199 @@ export const AppProvider = ({ children }) => {
       time:        booking.time,
       price:       booking.price,
     };
-    try {
-      const result = await Promise.race([
-        supabase.from('bookings').insert({
-          client_name: booking.clientName,
-          client_id:   booking.clientId || null,
-          service:     booking.service,
-          date:        booking.date,
-          time:        booking.time,
-          barber:      booking.barber,
-          price:       booking.price,
-          slots:       booking.slots || 1,
-          status:      'confirmed',
-          is_periodic: false,
-        }).select().single(),
-        new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 5000)),
-      ]);
-      const { data, error } = result;
-      if (!error && data) {
-        const nb = mapBooking(data);
-        setBookings(prev => [nb, ...prev]);
-        sendBookingEmail(emailParams);
-        return nb;
+    console.log('[addBooking] INSERT start');
+    const result = await Promise.race([
+      supabase.from('bookings').insert({
+        client_name: booking.clientName,
+        client_id:   authUserId,
+        service:     booking.service,
+        date:        booking.date,
+        time:        booking.time,
+        barber:      booking.barber,
+        price:       booking.price,
+        slots:       booking.slots ?? 1,
+        status:      'pending',
+        is_periodic: false,
+      }).select().single(),
+      new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 8000)),
+    ]);
+    console.log('[addBooking] INSERT result:', { data: result?.data, error: result?.error });
+    const { data, error } = result;
+    if (error) {
+      // Sessione orfana: il JWT punta a un auth.users.id cancellato manualmente.
+      // Forziamo signOut così l'utente può rifare login con uno stato pulito.
+      const msg = (error.message || '').toLowerCase();
+      if (msg.includes('foreign key') || msg.includes('bookings_client_id_fkey') || msg.includes('jwt')) {
+        try { await supabase.auth.signOut(); } catch (_) {}
+        setIsLoggedIn(false);
+        setIsAdmin(false);
+        setCurrentUser(null);
+        throw new Error('La tua sessione non è più valida. Effettua di nuovo l\'accesso.');
       }
-    } catch (_) {}
-    const local = { ...booking, id: Date.now().toString(), status: 'confirmed' };
-    setBookings(prev => [local, ...prev]);
+      throw error;
+    }
+    const nb = mapBooking(data);
+    setBookings(prev => [nb, ...prev]);
     sendBookingEmail(emailParams);
-    return local;
+    return nb;
+  };
+
+  // Helpers periodica ─────────────────────────────────────────────────────
+  // Verifica se l'utente corrente ha almeno una occorrenza periodica futura attiva.
+  // Ritorna la serie attiva (o null se non ne ha).
+  const hasActivePeriodic = (clientId) => {
+    if (!clientId) return null;
+    return periodicBookings.find(p => p.clientId === clientId && p.active !== false) || null;
+  };
+
+  // Genera tutte le date di una serie periodica per `durationDays` giorni a partire da `startFrom`.
+  // Salta lunedì (chiuso) e domenica (chiuso). Per "monthly" usa mese+1 ricorsivo,
+  // per weekly/biweekly aggiunge intervalDays.
+  const generatePeriodicDates = (startFromDate, frequency, durationDays = 365) => {
+    const intervalMap = { weekly: 7, biweekly: 14, monthly: 30 };
+    const result = [];
+    const limit = new Date(startFromDate);
+    limit.setDate(limit.getDate() + durationDays);
+
+    let current = new Date(startFromDate);
+    // Sposta al primo giorno disponibile (no lun/dom)
+    let safety = 0;
+    while (current.getDay() === 0 || current.getDay() === 1) {
+      current.setDate(current.getDate() + 1);
+      if (++safety > 7) break;
+    }
+
+    while (current <= limit) {
+      result.push(new Date(current));
+      const next = new Date(current);
+      if (frequency === 'monthly') {
+        next.setMonth(next.getMonth() + 1);
+      } else {
+        next.setDate(next.getDate() + (intervalMap[frequency] || 7));
+      }
+      // Salta lun/dom
+      safety = 0;
+      while (next.getDay() === 0 || next.getDay() === 1) {
+        next.setDate(next.getDate() + 1);
+        if (++safety > 7) break;
+      }
+      current = next;
+    }
+    return result;
   };
 
   const addPeriodicBooking = async (periodicBooking) => {
+    const clientId   = periodicBooking.clientId || currentUser?.id || null;
+    const clientName = periodicBooking.clientName || currentUser?.name || 'Ospite';
+    const frequency  = periodicBooking.frequency || periodicBooking.periodType;
+    const startDate  = periodicBooking.startDate ? new Date(periodicBooking.startDate) : new Date();
+    // Inizio: almeno 3 giorni nel futuro per dare margine al cliente
+    if (!periodicBooking.startDate) startDate.setDate(startDate.getDate() + 3);
+
+    // 1 anno di occorrenze
+    const dates = generatePeriodicDates(startDate, frequency, 365);
+    if (dates.length === 0) {
+      throw new Error('Impossibile generare le date della prenotazione periodica.');
+    }
+
+    // Prepara le righe da inserire
+    const rows = dates.map(d => ({
+      client_name:        clientName,
+      client_id:          clientId,
+      service:            periodicBooking.service,
+      date:               d.toISOString().slice(0, 10),
+      time:               periodicBooking.time,
+      barber:             periodicBooking.barber,
+      price:              periodicBooking.price,
+      slots:              periodicBooking.slots || 1,
+      status:             'confirmed',
+      is_periodic:        true,
+      periodic_frequency: frequency,
+    }));
+
+    // INSERT batch — se Supabase fallisce, salviamo comunque la "serie" sintetica in locale
     try {
-      const { data, error } = await supabase.from('bookings').insert({
-        client_name:        periodicBooking.clientName,
-        service:            periodicBooking.service,
-        date:               periodicBooking.startDate || new Date().toISOString().slice(0, 10),
-        time:               periodicBooking.time,
-        barber:             periodicBooking.barber,
-        price:              periodicBooking.price,
-        slots:              periodicBooking.slots || 1,
-        status:             'confirmed',
-        is_periodic:        true,
-        periodic_frequency: periodicBooking.frequency,
-      }).select().single();
+      const result = await Promise.race([
+        supabase.from('bookings').insert(rows).select(),
+        new Promise((_, r) => setTimeout(() => r(new Error('sb_timeout')), 10000)),
+      ]);
+      const { data, error } = result;
       if (!error && data) {
-        const np = { ...mapBooking(data), active: true };
-        setPeriodicBookings(prev => [np, ...prev]);
-        return np;
+        const mapped = data.map(mapBooking);
+        setBookings(prev => [...mapped, ...prev]);
+        // Refetch per ricostruire periodicBookings dalla nuova lista
+        fetchBookings();
+        return { active: true, count: mapped.length };
       }
-    } catch (_) {}
-    const local = { ...periodicBooking, id: Date.now().toString(), active: true };
-    setPeriodicBookings(prev => [local, ...prev]);
-    return local;
+      if (error) throw error;
+    } catch (e) {
+      console.warn('[addPeriodicBooking] errore insert batch:', e?.message);
+      throw e;
+    }
+    return null;
+  };
+
+  // Cancella TUTTE le occorrenze future di una serie periodica per il cliente.
+  // `seriesKey` può essere o la riga `series` ritornata da periodicBookings,
+  // oppure { clientId, frequency, barber, service, time }.
+  const cancelPeriodicSeries = async (series) => {
+    const clientId  = series.clientId;
+    const frequency = series.frequency;
+    const barber    = series.barber;
+    const service   = series.service;
+    const time      = series.time;
+    if (!clientId || !frequency) return false;
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    try {
+      // Cancella sul DB tutte le occorrenze future di questa serie
+      const { error } = await supabase
+        .from('bookings')
+        .update({ status: 'cancelled' })
+        .eq('client_id', clientId)
+        .eq('is_periodic', true)
+        .eq('periodic_frequency', frequency)
+        .eq('barber', barber)
+        .eq('service', service)
+        .eq('time', time)
+        .gte('date', todayStr);
+      if (error) throw error;
+    } catch (e) {
+      console.warn('[cancelPeriodicSeries] errore update DB:', e?.message);
+    }
+
+    // Aggiorna lo state locale
+    setBookings(prev => prev.map(b => {
+      if (!b.isPeriodic) return b;
+      if (b.clientId !== clientId) return b;
+      if (b.frequency !== frequency) return b;
+      if (b.barber !== barber || b.service !== service || b.time !== time) return b;
+      if (b.date < todayStr) return b;
+      return { ...b, status: 'cancelled' };
+    }));
+    // Ricostruisce periodicBookings
+    fetchBookings();
+    return true;
   };
 
   const updateBookingStatus = async (bookingId, status) => {
-    try { await supabase.from('bookings').update({ status }).eq('id', bookingId); } catch (_) {}
+    // .select() ritorna le righe modificate: 0 righe = RLS ha silenziosamente rifiutato l'update
+    const { data, error } = await supabase.from('bookings').update({ status }).eq('id', bookingId).select();
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      throw new Error('Permessi insufficienti: questa prenotazione non e\' modificabile dal tuo utente.');
+    }
     setBookings(prev => prev.map(b => b.id === bookingId ? { ...b, status } : b));
   };
 
   const cancelBooking = async (bookingId) => {
     const cancelled = bookings.find(b => b.id === bookingId);
-    try { await supabase.from('bookings').update({ status: 'cancelled' }).eq('id', bookingId); } catch (_) {}
+    const { data, error } = await supabase.from('bookings').update({ status: 'cancelled' }).eq('id', bookingId).select();
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      throw new Error('Permessi insufficienti: questa prenotazione non e\' annullabile dal tuo utente.');
+    }
     setBookings(prev => prev.map(b => b.id === bookingId ? { ...b, status: 'cancelled' } : b));
     if (cancelled) {
       setNotifications(prev => [{
@@ -463,14 +612,16 @@ export const AppProvider = ({ children }) => {
   };
 
   const updateBooking = async (bookingId, updates) => {
-    try {
-      const up = {};
-      if (updates.date)   up.date   = updates.date;
-      if (updates.time)   up.time   = updates.time;
-      if (updates.barber) up.barber = updates.barber;
-      if (updates.status) up.status = updates.status;
-      await supabase.from('bookings').update(up).eq('id', bookingId);
-    } catch (_) {}
+    const up = {};
+    if (updates.date)   up.date   = updates.date;
+    if (updates.time)   up.time   = updates.time;
+    if (updates.barber) up.barber = updates.barber;
+    if (updates.status) up.status = updates.status;
+    const { data, error } = await supabase.from('bookings').update(up).eq('id', bookingId).select();
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      throw new Error('Permessi insufficienti: questa prenotazione non e\' modificabile dal tuo utente.');
+    }
     setBookings(prev => prev.map(b => b.id === bookingId ? { ...b, ...updates } : b));
   };
 
@@ -499,6 +650,7 @@ export const AppProvider = ({ children }) => {
       bookings, periodicBookings, users, barbers, notifications, pageViews,
       loginAdmin, loginUser, registerUser, logout,
       addBooking, addPeriodicBooking,
+      hasActivePeriodic, cancelPeriodicSeries,
       updateBookingStatus, cancelBooking, updateBooking,
       setBarberVacation, updateBarberPhoto,
       addNotification, markNotificationRead, markAllNotificationsRead,

@@ -2,10 +2,14 @@ import React, { useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   Modal, ActivityIndicator, Dimensions, StatusBar, Image,
+  Alert, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useApp } from '../context/AppContext';
 import { SERVICES, BARBERS, BARBER_PHOTOS } from '../data/appData';
+import { getResidualTimes } from '../utils/calendarUtils';
+import { downloadICS } from '../utils/emailService';
+import { ensureValidToken } from '../utils/authService';
 
 const { width } = Dimensions.get('window');
 
@@ -41,40 +45,50 @@ function generateDates(count = 20) {
   return dates;
 }
 
-function getBookedTimes(bookings, barberName, dateStr, selectedService) {
+function getSlotAvailability(bookings, barberName, dateStr, selectedService) {
+  // Slot REALMENTE occupati da altre prenotazioni di questo barbiere
+  const realBooked = new Set();
   const barberBookings = bookings.filter(b =>
     b.barber === barberName && b.date === dateStr && b.status !== 'cancelled'
   );
-  const blocked = new Set();
   barberBookings.forEach(b => {
     const svc = SERVICES.find(s => s.name === b.service);
-    const slots = svc ? (svc.slots || 1) : 1;
+    const slots = svc ? (svc.slots ?? 1) : (b.slots ?? 1);
+    if (slots === 0) return; // booking micro: non occupa slot da 30 min
     const idx = TIMES.indexOf(b.time);
     if (idx >= 0) {
       for (let i = 0; i < slots; i++) {
-        if (TIMES[idx + i]) blocked.add(TIMES[idx + i]);
+        if (TIMES[idx + i]) realBooked.add(TIMES[idx + i]);
       }
     }
   });
+
+  // Slot non utilizzabili dal servizio scelto (fine giornata o pausa pranzo)
+  const unavailable = new Set();
   if (selectedService) {
-    const newSlots = selectedService.slots || 1;
-    TIMES.forEach((t, idx) => {
-      for (let i = 1; i < newSlots; i++) {
-        if (!TIMES[idx + i]) blocked.add(t);
-      }
-    });
-    // 12:30 è l'ultimo slot mattutino: un servizio da 2 slot partirebbe da 12:30→15:00 (pausa pranzo)
-    if (newSlots > 1) blocked.add('12:30');
+    const newSlots = selectedService.slots ?? 1;
+    if (newSlots > 0) {
+      TIMES.forEach((t, idx) => {
+        for (let i = 1; i < newSlots; i++) {
+          if (!TIMES[idx + i]) unavailable.add(t);
+        }
+      });
+      // 12:30 è l'ultimo slot mattutino: un servizio multi-slot sforerebbe la pausa pranzo
+      if (newSlots > 1) unavailable.add('12:30');
+    }
   }
-  return blocked;
+
+  return { realBooked, unavailable };
 }
 
 // Step order: Barbiere → Servizio → Data → Orario → Conferma
 const STEPS = ['Barbiere', 'Servizio', 'Data', 'Orario', 'Conferma'];
 
 export default function BookingScreen({ route, navigation }) {
-  const { addBooking, updateBooking, fetchBookings, currentUser, bookings, barbers } = useApp();
+  const { addBooking, currentUser, bookings, barbers, hasActivePeriodic } = useApp();
   const preselected = route?.params?.selectedService || null;
+
+  const activePeriodic = currentUser?.id ? hasActivePeriodic(currentUser.id) : null;
 
   const [step, setStep] = useState(0);
   const [selectedBarber, setSelectedBarber] = useState(null);
@@ -83,18 +97,48 @@ export default function BookingScreen({ route, navigation }) {
   const [selectedTime, setSelectedTime] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [confirmError, setConfirmError] = useState('');
 
   const dates = generateDates(20);
 
-  const bookedTimes = getBookedTimes(
+  const { realBooked, unavailable } = getSlotAvailability(
     bookings,
     selectedBarber?.name || '',
     selectedDate ? formatDateStr(selectedDate) : '',
     selectedService
   );
 
+  // 15-min residui da Taglio+Barba (sempre calcolati se barbiere+data scelti, anche per servizi non micro:
+  // sono visibili anche al cliente che ha scelto Taglio, cosi' sa che esistono e puo' scegliere un micro)
+  const isMicroService = !!selectedService?.microSlot;
+  const residualTimes = (selectedBarber && selectedDate)
+    ? Array.from(getResidualTimes(bookings, selectedBarber.name, formatDateStr(selectedDate))).sort()
+    : [];
+  // Filtro client-side: mostriamo SOLO orari liberi (no rossi/occupati né "N/D")
+  const availableTimes = TIMES.filter(t => !realBooked.has(t) && !unavailable.has(t));
+  const displayTimes = isMicroService
+    ? residualTimes
+    : [...availableTimes, ...residualTimes].sort((a, b) => a.localeCompare(b));
+
+  // Mostra un dialog "Sessione scaduta" che rimanda alla Login
+  const showSessionExpiredDialog = () => {
+    const msg = 'La tua sessione è scaduta per inattività.\nDevi accedere di nuovo prima di prenotare.';
+    const goToLogin = () => {
+      try { navigation.replace('Login'); } catch (_) {}
+    };
+    if (Platform.OS === 'web') {
+      try { window.alert(`Sessione scaduta\n\n${msg}`); } catch (_) {}
+      goToLogin();
+    } else {
+      Alert.alert('Sessione scaduta', msg, [
+        { text: 'Vai al login', onPress: goToLogin },
+      ]);
+    }
+  };
+
   const handleConfirm = async () => {
     setConfirming(true);
+    setConfirmError('');
     const booking = {
       clientName: currentUser?.name || 'Ospite',
       clientId:   currentUser?.id   || null,
@@ -103,15 +147,68 @@ export default function BookingScreen({ route, navigation }) {
       time:       selectedTime,
       barber:     selectedBarber?.name,
       price:      selectedService?.price,
-      slots:      selectedService?.slots || 1,
+      slots:      selectedService?.slots ?? 1,
     };
-    const newBooking = await addBooking(booking);
-    if (newBooking?.id) {
-      await updateBooking(newBooking.id, { status: 'pending' });
+    console.log('[Booking] handleConfirm START', booking);
+
+    // STEP 1: ensureValidToken — se la sessione e' scaduta, rinnova; se non puo', dialog + logout
+    try {
+      await ensureValidToken();
+    } catch (tokenErr) {
+      console.warn('[Booking] ensureValidToken fallito:', tokenErr?.message);
+      setConfirming(false);
+      if (tokenErr?.message === 'NO_SESSION' || tokenErr?.message === 'SESSION_EXPIRED') {
+        showSessionExpiredDialog();
+        return;
+      }
+      // Altri errori non bloccanti → si continua, verra' gestito dal try sotto
     }
-    await fetchBookings();
-    setConfirming(false);
-    setShowModal(true);
+
+    // Safety timer: se per qualsiasi motivo addBooking si blocca, dopo 15 sec sblocca tutto
+    let resolved = false;
+    const safetyTimer = setTimeout(() => {
+      if (resolved) return;
+      console.warn('[Booking] SAFETY TIMER triggered (15s)');
+      setConfirming(false);
+      setConfirmError('La prenotazione sta impiegando troppo tempo. Controlla la connessione e riprova.');
+    }, 15000);
+
+    try {
+      const result = await Promise.race([
+        addBooking(booking),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('total_timeout')), 12000)),
+      ]);
+      resolved = true;
+      clearTimeout(safetyTimer);
+      console.log('[Booking] addBooking OK', result);
+      setConfirming(false);
+      setShowModal(true);
+    } catch (e) {
+      resolved = true;
+      clearTimeout(safetyTimer);
+      setConfirming(false);
+      console.error('[Booking] handleConfirm ERROR:', e);
+      const detail = e?.message || e?.error_description || JSON.stringify(e) || 'errore sconosciuto';
+      // Sessione scaduta arrivata fino a qui (es. INSERT rifiutato per JWT scaduto) → dialog
+      if (/jwt|session|expired|unauthorized|401/i.test(detail) || detail === 'SESSION_EXPIRED') {
+        showSessionExpiredDialog();
+        return;
+      }
+      let msg;
+      if (detail === 'sb_timeout' || detail === 'total_timeout') {
+        msg = 'Connessione lenta o assente. Controlla la connessione e riprova tra qualche secondo.';
+      } else if (typeof detail === 'string' && detail.startsWith('Hai già una prenotazione')) {
+        msg = detail;
+      } else {
+        msg = `Impossibile salvare la prenotazione.\n\nDettaglio: ${detail}`;
+      }
+      // Banner inline (sempre visibile, anche se window.alert e' bloccato)
+      setConfirmError(msg);
+      try {
+        if (Platform.OS === 'web') window.alert(`Attenzione\n\n${msg}`);
+        else Alert.alert('Attenzione', msg);
+      } catch (_) {}
+    }
   };
 
   const canProceed = () => {
@@ -124,6 +221,74 @@ export default function BookingScreen({ route, navigation }) {
 
   // Use real barbers from context (with vacation status), fallback to static
   const availableBarbers = barbers.length > 0 ? barbers : BARBERS;
+
+  // BLOCCO: se l'utente ha una periodica attiva, non può prenotare singolarmente
+  if (activePeriodic) {
+    return (
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <LinearGradient colors={['#0A0A0A', '#141414']} style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.navigate('Home')} style={styles.backBtn}>
+            <Text style={styles.backIcon}>‹</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Prenota</Text>
+          <View style={{ width: 40 }} />
+        </LinearGradient>
+
+        <ScrollView contentContainerStyle={styles.blockScroll}>
+          <View style={styles.blockCard}>
+            <LinearGradient colors={['rgba(201,168,76,0.18)', 'rgba(201,168,76,0.05)']} style={styles.blockGrad}>
+              <View style={styles.blockIconCircle}>
+                <Text style={styles.blockIcon}>🔄</Text>
+              </View>
+              <Text style={styles.blockTitle}>Hai una Prenotazione Periodica Attiva</Text>
+              <Text style={styles.blockSubtitle}>Durata annuale · Vincolo esclusivo</Text>
+
+              <View style={styles.blockBox}>
+                <Text style={styles.blockBoxLabel}>Abbonamento</Text>
+                <Text style={styles.blockBoxValue}>{activePeriodic.periodLabel}</Text>
+              </View>
+              <View style={styles.blockBox}>
+                <Text style={styles.blockBoxLabel}>Servizio</Text>
+                <Text style={styles.blockBoxValue}>{activePeriodic.service}</Text>
+              </View>
+              <View style={styles.blockBox}>
+                <Text style={styles.blockBoxLabel}>Barbiere</Text>
+                <Text style={styles.blockBoxValue}>{activePeriodic.barber}</Text>
+              </View>
+              <View style={styles.blockBox}>
+                <Text style={styles.blockBoxLabel}>Orario fisso</Text>
+                <Text style={styles.blockBoxValue}>🕐 {activePeriodic.time}</Text>
+              </View>
+
+              <View style={styles.blockWarn}>
+                <Text style={styles.blockWarnIcon}>⚠️</Text>
+                <Text style={styles.blockWarnText}>
+                  Per prenotare altri servizi devi prima <Text style={{ fontWeight: '900', color: '#C9A84C' }}>disattivare la prenotazione periodica</Text> dal tuo Profilo. La periodica ha durata di 1 anno.
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.blockBtnPrimary}
+                onPress={() => navigation.navigate('Profile')}
+              >
+                <LinearGradient colors={['#C9A84C', '#A87C30']} style={styles.blockBtnGrad}>
+                  <Text style={styles.blockBtnText}>Vai al Profilo →</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.blockBtnSecondary}
+                onPress={() => navigation.navigate('Home')}
+              >
+                <Text style={styles.blockBtnSecondaryText}>Torna alla Home</Text>
+              </TouchableOpacity>
+            </LinearGradient>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -278,35 +443,100 @@ export default function BookingScreen({ route, navigation }) {
         {step === 3 && (
           <View style={styles.stepContent}>
             <Text style={styles.stepTitle}>Scegli l'Orario</Text>
-            <View style={styles.legendRow}>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: 'rgba(201,168,76,0.5)' }]} />
-                <Text style={styles.legendText}>Disponibile</Text>
+            {isMicroService && (
+              <View style={styles.microInfoBox}>
+                <Text style={styles.microInfoIcon}>💡</Text>
+                <Text style={styles.microInfoText}>
+                  Questo servizio da 15 min si prenota nei "ritagli" lasciati liberi dopo un Taglio + Barba (45 min).
+                </Text>
               </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: 'rgba(231,76,60,0.5)' }]} />
-                <Text style={styles.legendText}>Non disponibile</Text>
+            )}
+            {!isMicroService && (
+              <View style={styles.legendRow}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: 'rgba(201,168,76,0.5)' }]} />
+                  <Text style={styles.legendText}>Disponibile</Text>
+                </View>
+                {residualTimes.length > 0 && (
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: 'rgba(46,204,113,0.6)' }]} />
+                    <Text style={styles.legendText}>Libero 15'</Text>
+                  </View>
+                )}
               </View>
-            </View>
-            <View style={styles.timesGrid}>
-              {TIMES.map((time, i) => {
-                const isBooked = bookedTimes.has(time);
-                const isSelected = selectedTime === time;
-                return (
-                  <TouchableOpacity
-                    key={i}
-                    style={[styles.timeChip, isSelected && styles.timeChipActive, isBooked && styles.timeChipBooked]}
-                    onPress={() => !isBooked && setSelectedTime(time)}
-                    disabled={isBooked}
-                  >
-                    <Text style={[styles.timeText, isSelected && styles.timeTextActive, isBooked && styles.timeTextBooked]}>
-                      {time}
-                    </Text>
-                    {isBooked && <Text style={styles.timeBookedLabel}>Occ.</Text>}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            )}
+            {displayTimes.length === 0 ? (
+              <View style={styles.emptyMicroBox}>
+                <Text style={styles.emptyMicroIcon}>{isMicroService ? '🪒' : '📅'}</Text>
+                <Text style={styles.emptyMicroTitle}>
+                  {isMicroService
+                    ? 'Nessun residuo disponibile'
+                    : 'Nessun servizio disponibile per questa data'}
+                </Text>
+                <Text style={styles.emptyMicroText}>
+                  {isMicroService
+                    ? `Al momento ${selectedBarber?.name} non ha un Taglio + Barba prenotato per questo giorno, quindi non ci sono "code" da 15 min libere.`
+                    : `Tutti gli orari di ${selectedBarber?.name} per questa data sono già stati prenotati. Prova un'altra data o cambia barbiere.`}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.timesGrid}>
+                {displayTimes.map((time, i) => {
+                  // Un orario è "residuo" se NON è nel set TIMES (es. 09:45)
+                  const isResidual    = !TIMES.includes(time);
+                  const isBooked      = !isResidual && realBooked.has(time);
+                  const isUnavailable = !isResidual && !isBooked && unavailable.has(time);
+                  // I residui sono tappabili solo se l'utente ha scelto un servizio micro.
+                  // Se ha scelto un servizio normale, mostriamo i residui come "info" non tappabili.
+                  const residualInfoMode = isResidual && !isMicroService;
+                  const isDisabled    = isBooked || isUnavailable || residualInfoMode;
+                  const isSelected    = selectedTime === time;
+                  return (
+                    <TouchableOpacity
+                      key={i}
+                      style={[
+                        styles.timeChip,
+                        isSelected && styles.timeChipActive,
+                        isBooked && styles.timeChipBooked,
+                        isUnavailable && styles.timeChipUnavailable,
+                        (isMicroService && isResidual) && styles.timeChipMicro,
+                        residualInfoMode && styles.timeChipResidualInfo,
+                      ]}
+                      onPress={() => {
+                        if (residualInfoMode) {
+                          const msg = `Lo slot delle ${time} è uno spazio da 15 min lasciato libero da un altro cliente.\n\nÈ prenotabile solo per:\n• Pulizia Collo (€4)\n• Rifinitura Basette (€5)\n\nVuoi cambiare servizio?`;
+                          if (Platform.OS === 'web') {
+                            if (window.confirm(msg)) setStep(1);
+                          } else {
+                            Alert.alert('Slot 15 minuti', msg, [
+                              { text: 'No', style: 'cancel' },
+                              { text: 'Sì, cambia servizio', onPress: () => setStep(1) },
+                            ]);
+                          }
+                          return;
+                        }
+                        if (!isDisabled) setSelectedTime(time);
+                      }}
+                      disabled={isBooked || isUnavailable}
+                    >
+                      <Text style={[
+                        styles.timeText,
+                        isSelected && styles.timeTextActive,
+                        isBooked && styles.timeTextBooked,
+                        isUnavailable && styles.timeTextUnavailable,
+                        residualInfoMode && { color: '#2ecc71' },
+                      ]}>
+                        {time}
+                      </Text>
+                      {isMicroService && isResidual && <Text style={styles.timeMicroLabel}>15 min</Text>}
+                      {residualInfoMode && <Text style={styles.timeMicroLabel}>libero 15'</Text>}
+                      {isBooked          && <Text style={styles.timeBookedLabel}>Occ.</Text>}
+                      {isUnavailable     && <Text style={styles.timeUnavailLabel}>N/D</Text>}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
           </View>
         )}
 
@@ -314,6 +544,12 @@ export default function BookingScreen({ route, navigation }) {
         {step === 4 && selectedService && selectedBarber && selectedDate && selectedTime && (
           <View style={styles.stepContent}>
             <Text style={styles.stepTitle}>Riepilogo Prenotazione</Text>
+            {confirmError ? (
+              <View style={styles.errorBanner}>
+                <Text style={styles.errorBannerIcon}>⚠️</Text>
+                <Text style={styles.errorBannerText}>{confirmError}</Text>
+              </View>
+            ) : null}
             <View style={styles.summaryCard}>
               <LinearGradient colors={['rgba(201,168,76,0.1)', 'rgba(201,168,76,0.05)']} style={styles.summaryGrad}>
                 <View style={styles.summaryBarberRow}>
@@ -430,6 +666,40 @@ export default function BookingScreen({ route, navigation }) {
               {currentUser?.email && (
                 <Text style={styles.modalEmailNote}>📧 Riepilogo inviato a {currentUser.email}</Text>
               )}
+
+              {/* Bottone calendario con allarme 1h prima */}
+              <TouchableOpacity
+                style={styles.calendarBtn}
+                onPress={async () => {
+                  if (!selectedDate || !selectedTime || !selectedService || !selectedBarber) return;
+                  const y = selectedDate.getFullYear();
+                  const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
+                  const d = String(selectedDate.getDate()).padStart(2, '0');
+                  const ok = await downloadICS({
+                    date: `${y}-${m}-${d}`,
+                    time: selectedTime,
+                    service: selectedService.name,
+                    barber: selectedBarber.name,
+                    slots: selectedService.slots ?? 1,
+                    durationMin: selectedService.duration,
+                  });
+                  if (Platform.OS === 'web') {
+                    if (ok) {
+                      window.alert('✅ File calendario scaricato!\n\nApri il file scaricato per aggiungerlo al tuo calendario.\nRiceverai una notifica 1 ora prima dell\'appuntamento.');
+                    } else {
+                      window.alert('⚠️ Non sono riuscito a generare il file calendario. Riprova oppure aggiungi manualmente l\'appuntamento.');
+                    }
+                  }
+                }}
+              >
+                <View style={styles.calendarBtnInner}>
+                  <Text style={styles.calendarBtnIcon}>🔔</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.calendarBtnText}>Aggiungi al calendario</Text>
+                    <Text style={styles.calendarBtnSub}>Promemoria automatico 1 ora prima</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
 
               {/* CTA buttons */}
               <TouchableOpacity
@@ -576,10 +846,41 @@ const styles = StyleSheet.create({
   },
   timeChipActive: { backgroundColor: 'rgba(201,168,76,0.15)', borderColor: '#C9A84C' },
   timeChipBooked: { backgroundColor: 'rgba(231,76,60,0.08)', borderColor: 'rgba(231,76,60,0.2)', opacity: 0.6 },
+  timeChipUnavailable: { backgroundColor: 'rgba(150,150,150,0.06)', borderColor: 'rgba(150,150,150,0.15)', opacity: 0.45 },
   timeText: { color: 'rgba(255,255,255,0.7)', fontWeight: '600', fontSize: 14 },
   timeTextActive: { color: '#C9A84C' },
   timeTextBooked: { color: 'rgba(231,76,60,0.6)', fontSize: 12 },
+  timeTextUnavailable: { color: 'rgba(180,180,180,0.6)', fontSize: 12 },
   timeBookedLabel: { color: 'rgba(231,76,60,0.5)', fontSize: 9, marginTop: 2 },
+  timeUnavailLabel: { color: 'rgba(150,150,150,0.55)', fontSize: 9, marginTop: 2 },
+  timeChipMicro: {
+    backgroundColor: 'rgba(46,204,113,0.18)',
+    borderColor: 'rgba(46,204,113,0.55)',
+  },
+  timeChipResidualInfo: {
+    backgroundColor: 'rgba(46,204,113,0.08)',
+    borderColor: 'rgba(46,204,113,0.4)',
+    borderStyle: 'dashed',
+  },
+  timeMicroLabel: { color: '#2ecc71', fontSize: 9, marginTop: 2, fontWeight: '700' },
+
+  microInfoBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: 'rgba(46,204,113,0.1)',
+    borderRadius: 12, padding: 12, marginBottom: 14,
+    borderWidth: 1, borderColor: 'rgba(46,204,113,0.35)',
+  },
+  microInfoIcon: { fontSize: 22 },
+  microInfoText: { flex: 1, color: 'rgba(255,255,255,0.75)', fontSize: 12, lineHeight: 16 },
+
+  emptyMicroBox: {
+    alignItems: 'center', paddingVertical: 30, paddingHorizontal: 20,
+    backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 14,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  emptyMicroIcon: { fontSize: 44, marginBottom: 10 },
+  emptyMicroTitle: { color: '#FFFFFF', fontWeight: '800', fontSize: 16, marginBottom: 6 },
+  emptyMicroText: { color: 'rgba(255,255,255,0.5)', fontSize: 12, textAlign: 'center', lineHeight: 18 },
 
   // Summary (Step 4)
   summaryCard: { borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(201,168,76,0.3)' },
@@ -660,9 +961,62 @@ const styles = StyleSheet.create({
     color: 'rgba(201,168,76,0.6)', fontSize: 11, textAlign: 'center',
     marginTop: 12, marginHorizontal: 24,
   },
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: 'rgba(231,76,60,0.15)',
+    borderRadius: 12, padding: 14, marginBottom: 14,
+    borderWidth: 1, borderColor: 'rgba(231,76,60,0.5)',
+  },
+  errorBannerIcon: { fontSize: 22 },
+  errorBannerText: { flex: 1, color: '#FFFFFF', fontSize: 13, lineHeight: 17 },
+  calendarBtn: {
+    marginHorizontal: 24, marginTop: 14,
+    backgroundColor: 'rgba(46,204,113,0.1)',
+    borderWidth: 1.5, borderColor: 'rgba(46,204,113,0.5)',
+    borderRadius: 14, padding: 14,
+  },
+  calendarBtnInner: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  calendarBtnIcon: { fontSize: 26 },
+  calendarBtnText: { color: '#2ecc71', fontWeight: '800', fontSize: 14 },
+  calendarBtnSub: { color: 'rgba(46,204,113,0.7)', fontSize: 11, marginTop: 2 },
   modalBtnPrimary: { marginHorizontal: 24, marginTop: 16, borderRadius: 14, overflow: 'hidden' },
   modalBtnGrad: { paddingVertical: 15, alignItems: 'center' },
   modalBtnText: { color: '#000000', fontWeight: '900', fontSize: 15 },
   modalBtnSecondary: { marginHorizontal: 24, marginTop: 10, paddingVertical: 12, alignItems: 'center' },
   modalBtnSecondaryText: { color: 'rgba(255,255,255,0.4)', fontSize: 14 },
+
+  // Blocco "periodica attiva"
+  blockScroll: { padding: 20, paddingTop: 32, paddingBottom: 60 },
+  blockCard: { borderRadius: 18, overflow: 'hidden', borderWidth: 1.5, borderColor: 'rgba(201,168,76,0.35)' },
+  blockGrad: { padding: 22, alignItems: 'center' },
+  blockIconCircle: {
+    width: 80, height: 80, borderRadius: 40,
+    backgroundColor: 'rgba(201,168,76,0.2)',
+    borderWidth: 2, borderColor: '#C9A84C',
+    alignItems: 'center', justifyContent: 'center', marginBottom: 14,
+  },
+  blockIcon: { fontSize: 40 },
+  blockTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: '900', textAlign: 'center' },
+  blockSubtitle: { color: '#C9A84C', fontSize: 12, fontWeight: '700', marginTop: 4, letterSpacing: 1, marginBottom: 20 },
+  blockBox: {
+    width: '100%', backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 12,
+    paddingVertical: 10, paddingHorizontal: 14, marginBottom: 8,
+    borderWidth: 1, borderColor: 'rgba(201,168,76,0.15)',
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+  },
+  blockBoxLabel: { color: 'rgba(255,255,255,0.5)', fontSize: 12, fontWeight: '600' },
+  blockBoxValue: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+  blockWarn: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    backgroundColor: 'rgba(243,156,18,0.12)', borderRadius: 12,
+    padding: 14, marginTop: 14, marginBottom: 18,
+    borderWidth: 1, borderColor: 'rgba(243,156,18,0.4)',
+  },
+  blockWarnIcon: { fontSize: 22 },
+  blockWarnText: { flex: 1, color: 'rgba(255,255,255,0.85)', fontSize: 13, lineHeight: 18 },
+  blockBtnPrimary: { width: '100%', borderRadius: 14, overflow: 'hidden' },
+  blockBtnGrad: { paddingVertical: 15, alignItems: 'center' },
+  blockBtnText: { color: '#000000', fontWeight: '900', fontSize: 15 },
+  blockBtnSecondary: { marginTop: 10, paddingVertical: 12, alignItems: 'center' },
+  blockBtnSecondaryText: { color: 'rgba(255,255,255,0.55)', fontSize: 14 },
 });

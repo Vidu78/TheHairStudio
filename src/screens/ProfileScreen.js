@@ -6,7 +6,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useApp } from '../context/AppContext';
 import { SALON_INFO } from '../data/appData';
 import { supabase } from '../config/supabase';
-import { buildGoogleCalendarUrl } from '../utils/emailService';
+import { buildGoogleCalendarUrl, downloadICS } from '../utils/emailService';
+import { SERVICES } from '../data/appData';
+import { logout as authLogout } from '../utils/authService';
 
 function StarRating({ bookingId, rating, onRate }) {
   return (
@@ -24,7 +26,7 @@ function StarRating({ bookingId, rating, onRate }) {
 }
 
 export default function ProfileScreen({ navigation }) {
-  const { currentUser, logout, bookings, periodicBookings, cancelBooking, fetchBookings } = useApp();
+  const { currentUser, logout, bookings, periodicBookings, cancelBooking, cancelPeriodicSeries, fetchBookings } = useApp();
   const [showInfo, setShowInfo]         = useState(false);
   const [ratings, setRatings]           = useState({});
   const [phoneInput, setPhoneInput]     = useState('');
@@ -86,10 +88,13 @@ export default function ProfileScreen({ navigation }) {
     }
   };
 
-  const myBookings = bookings.filter(b =>
-    (currentUser?.id && b.clientId === currentUser.id) ||
-    (b.clientName && currentUser?.name && b.clientName === currentUser.name)
-  );
+  // Prenotazioni "singole" (NON occorrenze di una periodica)
+  const myBookings = bookings.filter(b => {
+    const mine =
+      (currentUser?.id && b.clientId === currentUser.id) ||
+      (b.clientName && currentUser?.name && b.clientName === currentUser.name);
+    return mine && !b.isPeriodic;
+  });
   const userBookings = myBookings;
 
   const myPeriodicBookings = periodicBookings.filter(b =>
@@ -97,14 +102,39 @@ export default function ProfileScreen({ navigation }) {
     (b.clientName && currentUser?.name && b.clientName === currentUser.name)
   );
 
-  const handleLogout = () => {
+  const handleCancelPeriodic = (series) => {
+    const msg = `Vuoi disattivare l'abbonamento ${series.periodLabel} (${series.service} con ${series.barber})?\n\nVerranno annullate tutte le occorrenze future.\nPotrai tornare a fare prenotazioni singole.`;
+    const doCancel = async () => {
+      try {
+        await cancelPeriodicSeries(series);
+        if (Platform.OS === 'web') window.alert('✅ Abbonamento disattivato.');
+      } catch (e) {
+        if (Platform.OS === 'web') window.alert('Errore: ' + (e?.message || 'riprova'));
+      }
+    };
     if (Platform.OS === 'web') {
-      if (window.confirm("Vuoi uscire dall'app?")) logout();
+      if (window.confirm(msg)) doCancel();
+    } else {
+      Alert.alert('Disattiva abbonamento', msg, [
+        { text: 'No', style: 'cancel' },
+        { text: 'Sì, disattiva', style: 'destructive', onPress: doCancel },
+      ]);
+    }
+  };
+
+  const handleLogout = async () => {
+    const doLogout = async () => {
+      try { await logout(); } catch (_) {}      // context cleanup
+      try { await authLogout({ redirect: Platform.OS === 'web' }); } catch (_) {}
+      if (Platform.OS !== 'web') navigation.replace('Login');
+    };
+    if (Platform.OS === 'web') {
+      if (window.confirm("Vuoi uscire dall'app?")) await doLogout();
       return;
     }
     Alert.alert('Logout', 'Vuoi uscire dall\'app?', [
       { text: 'Annulla', style: 'cancel' },
-      { text: 'Esci', style: 'destructive', onPress: logout },
+      { text: 'Esci', style: 'destructive', onPress: doLogout },
     ]);
   };
 
@@ -179,15 +209,33 @@ export default function ProfileScreen({ navigation }) {
                     />
                   )}
                   {b.status === 'confirmed' && (
-                    <TouchableOpacity
-                      style={styles.calendarBtn}
-                      onPress={() => {
-                        const url = buildGoogleCalendarUrl({ date: b.date, time: b.time, service: b.service, barber: b.barber, slots: b.slots || 1 });
-                        Linking.openURL(url);
-                      }}
-                    >
-                      <Text style={styles.calendarBtnText}>📅 Google Calendar</Text>
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                      <TouchableOpacity
+                        style={styles.icsBtn}
+                        onPress={() => {
+                          const svc = SERVICES.find(s => s.name === b.service);
+                          downloadICS({
+                            date: b.date,
+                            time: b.time,
+                            service: b.service,
+                            barber: b.barber,
+                            slots: b.slots || 1,
+                            durationMin: svc?.duration,
+                          });
+                        }}
+                      >
+                        <Text style={styles.icsBtnText}>🔔 Promemoria 1h prima</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.calendarBtn}
+                        onPress={() => {
+                          const url = buildGoogleCalendarUrl({ date: b.date, time: b.time, service: b.service, barber: b.barber, slots: b.slots || 1 });
+                          Linking.openURL(url);
+                        }}
+                      >
+                        <Text style={styles.calendarBtnText}>📅 Google Calendar</Text>
+                      </TouchableOpacity>
+                    </View>
                   )}
                 </View>
                 <View style={styles.bookingRight}>
@@ -217,18 +265,33 @@ export default function ProfileScreen({ navigation }) {
         {myPeriodicBookings.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>🔄 Abbonamenti Attivi</Text>
-            {myPeriodicBookings.map(pb => (
-              <View key={pb.id} style={styles.periodicCard}>
-                <LinearGradient colors={['rgba(201,168,76,0.1)', 'rgba(201,168,76,0.04)']} style={styles.periodicGrad}>
-                  <View style={styles.periodicTop}>
-                    <Text style={styles.periodicPeriod}>{pb.periodLabel}</Text>
-                    <View style={styles.activeBadge}><Text style={styles.activeBadgeText}>ATTIVO</Text></View>
-                  </View>
-                  <Text style={styles.periodicDetail}>{pb.serviceIcon} {pb.service} • con {pb.barber}</Text>
-                  <Text style={styles.periodicTime}>🕐 {pb.time}</Text>
-                </LinearGradient>
-              </View>
-            ))}
+            {myPeriodicBookings.map(pb => {
+              const count = pb.nextDates?.length || 0;
+              const next = pb.nextDates?.[0];
+              return (
+                <View key={pb.id} style={styles.periodicCard}>
+                  <LinearGradient colors={['rgba(201,168,76,0.1)', 'rgba(201,168,76,0.04)']} style={styles.periodicGrad}>
+                    <View style={styles.periodicTop}>
+                      <Text style={styles.periodicPeriod}>{pb.periodLabel}</Text>
+                      <View style={styles.activeBadge}><Text style={styles.activeBadgeText}>ATTIVO 1 ANNO</Text></View>
+                    </View>
+                    <Text style={styles.periodicDetail}>✂ {pb.service} • con {pb.barber}</Text>
+                    <Text style={styles.periodicTime}>🕐 {pb.time} fisso</Text>
+                    {count > 0 && (
+                      <Text style={styles.periodicMeta}>
+                        📅 {count} appuntamenti rimanenti{next ? ` • prossimo: ${next}` : ''}
+                      </Text>
+                    )}
+                    <TouchableOpacity
+                      style={styles.disableBtn}
+                      onPress={() => handleCancelPeriodic(pb)}
+                    >
+                      <Text style={styles.disableBtnText}>🛑 Disattiva abbonamento</Text>
+                    </TouchableOpacity>
+                  </LinearGradient>
+                </View>
+              );
+            })}
           </View>
         )}
 
@@ -359,7 +422,7 @@ export default function ProfileScreen({ navigation }) {
                 </View>
                 <View style={styles.infoRow2}>
                   <Text style={{ fontSize: 14 }}>📧</Text>
-                  <Text style={styles.infoRowText}>thehair.studio@gmail.com</Text>
+                  <Text style={styles.infoRowText}>thehairstudio.noci@outlook.it</Text>
                 </View>
                 <View style={styles.infoRow2}>
                   <Text style={{ fontSize: 14 }}>📸</Text>
@@ -465,6 +528,14 @@ const styles = StyleSheet.create({
   activeBadgeText: { color: '#2ecc71', fontWeight: '800', fontSize: 10 },
   periodicDetail: { color: 'rgba(255,255,255,0.7)', fontSize: 13 },
   periodicTime: { color: 'rgba(255,255,255,0.4)', fontSize: 12, marginTop: 4 },
+  periodicMeta: { color: 'rgba(46,204,113,0.8)', fontSize: 11, marginTop: 8, fontWeight: '600' },
+  disableBtn: {
+    marginTop: 12, paddingVertical: 9, paddingHorizontal: 12,
+    borderRadius: 10, alignSelf: 'flex-start',
+    backgroundColor: 'rgba(231,76,60,0.12)',
+    borderWidth: 1, borderColor: 'rgba(231,76,60,0.4)',
+  },
+  disableBtnText: { color: '#e74c3c', fontWeight: '800', fontSize: 12 },
 
   salonCard: {
     backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 16,
@@ -562,13 +633,19 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.2)', fontSize: 11, textAlign: 'center', marginBottom: 20,
   },
   calendarBtn: {
-    marginTop: 8, flexDirection: 'row', alignItems: 'center',
+    flexDirection: 'row', alignItems: 'center',
     backgroundColor: 'rgba(66,133,244,0.12)', borderRadius: 8,
     paddingHorizontal: 10, paddingVertical: 6,
     borderWidth: 1, borderColor: 'rgba(66,133,244,0.35)',
-    alignSelf: 'flex-start',
   },
   calendarBtnText: { color: '#4285F4', fontSize: 12, fontWeight: '700' },
+  icsBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(46,204,113,0.12)', borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderWidth: 1, borderColor: 'rgba(46,204,113,0.4)',
+  },
+  icsBtnText: { color: '#2ecc71', fontSize: 12, fontWeight: '700' },
 
   infoCloseBtn: {
     backgroundColor: 'rgba(201,168,76,0.15)', borderRadius: 14, padding: 14,
